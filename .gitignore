@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+upclick.db
+.secret_key
+.env
+.vercel
