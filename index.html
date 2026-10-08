@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UpClick — Learn to code</title>
+  <meta name="description" content="UpClick: short, hands-on coding courses with a certificate at the finish line.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Josefin+Sans:wght@400;600;700&family=Lilita+One&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#app">Skip to content</a>
+
+  <header class="site-header">
+    <a href="#/" class="logo" aria-label="UpClick home">UPClick</a>
+
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav" data-action="toggle-nav">
+      <span></span><span></span><span></span>
+      <span class="sr-only">Menu</span>
+    </button>
+
+    <nav id="nav" class="nav" aria-label="Main">
+      <a href="#/courses" data-route="courses">Courses</a>
+      <a href="#/about" data-route="about">About</a>
+      <a href="#/learning" data-route="learning">My Learning</a>
+      <a href="#/cart" data-route="cart" class="cart-link">Cart <span class="badge" id="cartBadge" hidden>0</span></a>
+      <span id="authSlot" class="auth-slot"></span>
+    </nav>
+  </header>
+
+  <main id="app" class="frame" tabindex="-1"></main>
+
+  <footer class="site-footer">
+    <a href="#/" class="logo logo-sm" aria-label="UpClick home">UPClick</a>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="#/courses">Courses</a>
+      <a href="#/about">About</a>
+      <a href="#/learning">My Learning</a>
+      <a href="#/signup">Sign up</a>
+    </nav>
+    <p class="footer-note">© 2026 UpClick · IMY 320 prototype — no real payments are taken.</p>
+  </footer>
+
+  <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+  <div class="modal" id="modal" hidden>
+    <div class="modal-backdrop" data-action="close-modal"></div>
+    <div class="modal-card" id="modalCard" role="dialog" aria-modal="true" tabindex="-1"></div>
+  </div>
+
+  <canvas id="confetti" aria-hidden="true"></canvas>
+
+  <script src="script.js"></script>
+</body>
+</html>
