@@ -82,7 +82,7 @@
     save();
     store.set('token', null);
     updateNav();
-    if (expired) toast('Your session has expired — please log in again.', { icon: '🔐' });
+    if (expired) toast('Your session has expired — please log in again.');
   }
 
   const $ = (s, r = document) => r.querySelector(s);
@@ -316,7 +316,7 @@
           <p class="lead dark">${esc(c.description)}</p>
           <ul class="meta-row">
             <li>${levelHTML(c.level)}</li>
-            <li>⏱ ${c.hours} hours</li>
+            <li>${c.hours} hours</li>
             <li>${ratingHTML(c)} (${c.students.toLocaleString('en-US')} learners)</li>
             <li>Taught by <strong>${esc(c.instructor)}</strong></li>
           </ul>
@@ -324,7 +324,7 @@
           <ol class="modules">
             ${c.modules.map((m, i) => `<li><span class="mod-num">${String(i + 1).padStart(2, '0')}</span><span>${esc(m)}</span><span class="mod-time">${20 + (i * 7) % 25} min</span></li>`).join('')}
           </ol>
-          <div class="finish-note"><span class="big-emoji" aria-hidden="true">🏆</span><span>Finish all ${c.modules.length} lessons to earn your personalised UpClick certificate.</span></div>
+          <div class="finish-note"><span>Finish all ${c.modules.length} lessons to earn your personalised UpClick certificate.</span></div>
         </div>
         <aside class="buy-box" aria-label="Enrol">
           <div class="price-lg">${money(c.price)}</div>
@@ -350,7 +350,6 @@
     const items = state.cart.map(byId).filter(Boolean);
     if (!items.length) {
       return `<section class="container empty-state">
-        <span class="big-emoji" aria-hidden="true">🛒</span>
         <h1 class="h2">Your cart is empty</h1>
         <p class="lead" style="margin-inline:auto">Every great developer started with one course. Find yours in under a minute.</p>
         <div class="actions"><a class="btn" href="#/courses">Browse courses</a></div>
@@ -372,8 +371,8 @@
           <h2 class="h3">Order summary</h2>
           <div class="sum-row"><span>Subtotal (${plural(items.length, 'course')})</span><span>${money(subtotal)}</span></div>
           ${discount
-            ? `<div class="sum-row accent"><span>🎁 Bundle discount (10%)</span><span>−${money(discount)}</span></div>`
-            : `<div class="unlock">Add one more course to unlock <strong>10% off</strong> 🎁<div class="meter"><i></i></div></div>`}
+            ? `<div class="sum-row accent"><span>Bundle discount (10%)</span><span>−${money(discount)}</span></div>`
+            : `<div class="unlock">Add one more course to unlock <strong>10% off</strong><div class="meter"><i></i></div></div>`}
           <div class="sum-row total"><span>Total</span><span>${money(total)}</span></div>
           <button class="btn btn-block" type="button" data-action="checkout">Checkout</button>
           <a class="btn btn-ghost btn-block" href="#/courses">Keep browsing</a>
@@ -385,7 +384,6 @@
   function viewAuth(mode) {
     if (state.user) {
       return `<section class="container empty-state signed-in">
-        <span class="big-emoji" aria-hidden="true">👋</span>
         <h1 class="h2">You’re signed in as ${esc(state.user.name)}</h1>
         <div class="actions"><a class="btn" href="#/learning">Go to My Learning</a><button class="btn btn-outline" type="button" data-action="logout">Log out</button></div>
       </section>`;
@@ -441,7 +439,7 @@
       ['Celebrate progress', 'Small wins add up. We mark every milestone, and every finished course ends with your own certificate.'],
       ['Listen and improve', 'Your feedback shapes what we build next. Tell us what works and what doesn’t.']
     ];
-    return `
+    return `<div class="about-page">
     <section class="split">
       <div>
         <p class="eyebrow">About us</p>
@@ -454,7 +452,7 @@
       </div>
       <div class="heart-wrap">
         <button class="heart-btn" type="button" data-action="heart" aria-label="Send UpClick some love">${HEART_SVG}</button>
-        <p class="hint" id="loveCount" aria-live="polite">${loves ? `${plural(loves, 'heart')} sent 💜` : 'Tap the heart 💜'}</p>
+        <p class="hint" id="loveCount" aria-live="polite">${loves ? `${plural(loves, 'heart')} sent` : 'Tap the heart'}</p>
       </div>
     </section>
     <section class="container">
@@ -466,7 +464,8 @@
     <section class="cta-band reveal">
       <h2>Ready to write your <span class="accent">first line?</span></h2>
       <a class="btn btn-white" href="#/courses">Explore courses</a>
-    </section>`;
+    </section>
+    </div>`;
   }
 
   function learnItem(c, startPct) {
@@ -488,14 +487,13 @@
         }).join('')}
       </ol>
       ${e.completedAt
-        ? `<a class="btn" href="#/certificate/${c.id}">🏆 View certificate</a>`
+        ? `<a class="btn" href="#/certificate/${c.id}">View certificate</a>`
         : `<button class="btn btn-outline btn-sm" type="button" data-action="next-lesson" data-id="${c.id}">Complete next lesson</button>`}
     </article>`;
   }
 
   function viewLoginNeeded(title) {
     return `<section class="container empty-state">
-      <span class="big-emoji" aria-hidden="true">🔐</span>
       <h1 class="h2">${title}</h1>
       <p class="lead" style="margin-inline:auto">Your courses, progress and certificates are saved to your account, so you can learn on any device.</p>
       <div class="actions"><a class="btn" href="#/login">Log in</a><a class="btn btn-outline" href="#/signup">Create a free account</a></div>
@@ -507,7 +505,6 @@
     const ids = Object.keys(state.enrolled).filter(byId);
     if (!ids.length) {
       return `<section class="container empty-state">
-        <span class="big-emoji" aria-hidden="true">🚀</span>
         <h1 class="h2">Nothing here yet</h1>
         <p class="lead" style="margin-inline:auto">Enrol in a course and your lessons, progress and certificates will live here.</p>
         <div class="actions"><a class="btn" href="#/courses">Find a course</a></div>
@@ -527,7 +524,6 @@
     const e = state.enrolled[id];
     if (!c || !e || !e.completedAt) {
       return `<section class="container empty-state">
-        <span class="big-emoji" aria-hidden="true">🔒</span>
         <h1 class="h2">Certificate locked</h1>
         <p class="lead" style="margin-inline:auto">Finish every lesson in this course to unlock your certificate.</p>
         <div class="actions"><a class="btn" href="#/learning">Go to My Learning</a></div>
@@ -565,7 +561,6 @@
 
   function viewNotFound() {
     return `<section class="container empty-state">
-      <span class="big-emoji" aria-hidden="true">🧭</span>
       <h1 class="h2">404 — page not found</h1>
       <p class="lead" style="margin-inline:auto">That link went somewhere we haven’t built yet.</p>
       <div class="actions"><a class="btn" href="#/">Back home</a><a class="btn btn-outline" href="#/courses">Browse courses</a></div>
@@ -589,7 +584,6 @@
     if (!state.user) return viewLoginNeeded('Log in as an admin');
     if (!state.user.is_admin) {
       return `<section class="container empty-state">
-        <span class="big-emoji" aria-hidden="true">🚫</span>
         <h1 class="h2">Admins only</h1>
         <p class="lead" style="margin-inline:auto">This page is for the UpClick team to manage courses.</p>
         <div class="actions"><a class="btn" href="#/courses">Browse courses</a></div>
@@ -671,7 +665,7 @@
       const saved = await api(id ? `/courses/${encodeURIComponent(id)}` : '/courses', { method: id ? 'PUT' : 'POST', body });
       COURSES = await api('/courses');
       render();
-      toast(id ? `Saved changes to <strong>${esc(saved.title)}</strong>` : `<strong>${esc(saved.title)}</strong> is live in the catalogue`, { icon: id ? '💾' : '🎉', action: { label: 'View', href: `#/course/${saved.id}` } });
+      toast(id ? `Saved changes to <strong>${esc(saved.title)}</strong>` : `<strong>${esc(saved.title)}</strong> is live in the catalogue`, { action: { label: 'View', href: `#/course/${saved.id}` } });
       if (!id) celebrate('small', $('[data-action="course-new"]'));
     } catch (err) {
       setLoading(btn, false);
@@ -682,8 +676,7 @@
   function confirmDeleteCourse(id) {
     const c = byId(id);
     if (!c) return;
-    openModal(`<div class="success"><div class="trophy">🗑️</div>
-      <h2 class="h3">Delete “${esc(c.title)}”?</h2>
+    openModal(`<div class="success"><h2 class="h3">Delete “${esc(c.title)}”?</h2>
       <p class="lead">It will disappear from the catalogue. This can’t be undone.</p>
       <button class="btn btn-block btn-danger" type="button" data-action="course-delete-confirm" data-id="${c.id}">Delete course</button>
       <button class="btn btn-ghost btn-block" type="button" data-action="close-modal">Keep it</button></div>`, 'Delete course');
@@ -696,11 +689,11 @@
       COURSES = await api('/courses');
       state.cart = state.cart.filter(byId); save();
       render();
-      toast('Course deleted.', { icon: '🗑️' });
+      toast('Course deleted.');
     } catch (err) {
       setLoading(btn, false);
       closeModal();
-      toast(esc(err.message), { icon: '⚠️', timeout: 5000 });
+      toast(esc(err.message), { timeout: 5000 });
     }
   }
 
@@ -800,7 +793,7 @@
     const out = $('#codeOut');
     runs += 1;
     out.hidden = true; void out.offsetWidth;
-    out.innerHTML = runs === 1 ? '&gt; you just learned JavaScript! 🎉' : `&gt; you just learned JavaScript! 🎉 <span style="opacity:.6">(×${runs})</span>`;
+    out.innerHTML = runs === 1 ? '&gt; you just learned JavaScript!' : `&gt; you just learned JavaScript! <span style="opacity:.6">(×${runs})</span>`;
     out.hidden = false;
     btn.textContent = '▶ Run again';
     celebrate('small', btn);
@@ -904,10 +897,10 @@
     }
   }
 
-  function toast(html, { icon = '✨', action, timeout = 3400 } = {}) {
+  function toast(html, { action, timeout = 3400 } = {}) {
     const el = document.createElement('div');
     el.className = 'toast';
-    el.innerHTML = `<span class="toast-ic" aria-hidden="true">${icon}</span><span>${html}</span>${action ? `<a class="toast-act" href="${action.href}">${action.label}</a>` : ''}`;
+    el.innerHTML = `<span>${html}</span>${action ? `<a class="toast-act" href="${action.href}">${action.label}</a>` : ''}`;
     $('#toasts').appendChild(el);
     setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 350); }, timeout);
   }
@@ -975,8 +968,8 @@
       b.replaceWith(link);
     });
     $$(`[data-action="buy-now"][data-id="${id}"]`).forEach(b => b.remove());
-    toast(`<strong>${esc(c.title)}</strong> added to your cart`, { icon: '🛒', action: { label: 'View cart', href: '#/cart' } });
-    if (state.cart.length === 2) setTimeout(() => toast('Bundle unlocked — <strong>10% off</strong> your order!', { icon: '🎁' }), 500);
+    toast(`<strong>${esc(c.title)}</strong> added to your cart`, { action: { label: 'View cart', href: '#/cart' } });
+    if (state.cart.length === 2) setTimeout(() => toast('Bundle unlocked — <strong>10% off</strong> your order!'), 500);
   }
 
   function removeFromCart(id, btn) {
@@ -993,8 +986,7 @@
     const items = state.cart.map(byId).filter(Boolean);
     if (!items.length) return;
     if (!state.user) {
-      openModal(`<div class="success"><div class="trophy">🔐</div>
-        <p class="eyebrow">One quick step</p>
+      openModal(`<div class="success"><p class="eyebrow">One quick step</p>
         <h2 class="h2">Create a free account to enrol</h2>
         <p class="lead">Your courses, progress and certificates are saved to your account. Your cart will be waiting right here.</p>
         <a class="btn btn-block" href="#/signup">Sign up — it’s free</a>
@@ -1006,7 +998,7 @@
       <p class="eyebrow">Checkout</p>
       <h2 class="h3">Almost there, ${first(state.user.name)}!</h2>
       <ul class="mini-list">${items.map(c => `<li><span>${esc(c.title)}</span><span>${money(c.price)}</span></li>`).join('')}</ul>
-      ${discount ? `<div class="sum-row accent"><span>🎁 Bundle discount</span><span>−${money(discount)}</span></div>` : ''}
+      ${discount ? `<div class="sum-row accent"><span>Bundle discount</span><span>−${money(discount)}</span></div>` : ''}
       <div class="sum-row total"><span>Total</span><span>${money(total)}</span></div>
       <p class="hint" style="margin-top:16px">Enrolling as <strong>${esc(state.user.email)}</strong>. Prototype checkout — no payment details are collected.</p>
       <button class="btn btn-block" type="button" data-action="confirm-checkout">Pay ${money(total)} &amp; enrol</button>`, 'Checkout');
@@ -1052,7 +1044,7 @@
     const meter = $('#pwMeter'), label = $('#pwLabel');
     if (!meter) return;
     const s = pw ? strength(pw) : 0;
-    const map = [['8+ characters', '#e6dfeb'], ['Weak', '#cf2a4a'], ['Okay', '#e08a00'], ['Strong', '#1f9d63'], ['Excellent 💪', '#9a0da3']];
+    const map = [['8+ characters', '#e6dfeb'], ['Weak', '#cf2a4a'], ['Okay', '#e08a00'], ['Strong', '#1f9d63'], ['Excellent', '#9a0da3']];
     meter.style.width = (pw ? Math.max(12, s * 25) : 0) + '%';
     meter.style.background = map[s][1];
     label.textContent = pw ? map[s][0] : map[0][0];
@@ -1107,7 +1099,7 @@
       setLoading(btn, false);
       if (err.status === 409) showFieldError($('#email', f), err.message);
       else if (err.status === 401) showFieldError($('#password', f), err.message);
-      else toast(esc(err.message), { icon: '⚠️', timeout: 5000 });
+      else toast(esc(err.message), { timeout: 5000 });
       return;
     }
     setLoading(btn, false);
@@ -1117,7 +1109,7 @@
     const nextHref = state.cart.length ? '#/cart' : hasCourses ? '#/learning' : '#/courses';
     const nextLabel = state.cart.length ? 'Back to my cart' : hasCourses ? 'Continue learning' : 'Pick my first course';
     openModal(`<div class="success">${CHECK_SVG}
-      <h2 class="h2">${mode === 'signup' ? 'Welcome aboard' : 'Welcome back'}, ${first(name)}! 🚀</h2>
+      <h2 class="h2">${mode === 'signup' ? 'Welcome aboard' : 'Welcome back'}, ${first(name)}!</h2>
       <p class="lead">${mode === 'signup' ? 'Your account is ready. Your first line of code is one click away.' : 'Good to see you again — let’s pick up where you left off.'}</p>
       <a class="btn btn-block" href="${nextHref}">${nextLabel}</a></div>`, 'Welcome');
     celebrate('medium');
@@ -1132,7 +1124,7 @@
     } catch (err) {
       setLoading(btn, false);
       if (err.status === 401) closeModal();
-      toast(esc(err.message), { icon: '⚠️', timeout: 5000 });
+      toast(esc(err.message), { timeout: 5000 });
       return;
     }
     await new Promise(r => setTimeout(r, Math.max(0, 1100 - (Date.now() - started))));
@@ -1147,7 +1139,7 @@
     $('#modalCard').innerHTML = `<button class="modal-x" type="button" data-action="close-modal" aria-label="Close">✕</button>
       <div class="success">${CHECK_SVG}
         <p class="eyebrow">Order confirmed · ${money(res.total)}</p>
-        <h2 class="h2">You’re in, ${first(state.user.name)}! 🎉</h2>
+        <h2 class="h2">You’re in, ${first(state.user.name)}!</h2>
         <p>You’re now enrolled in <strong>${plural(items.length, 'course')}</strong>:</p>
         <ul class="enrolled-list">${items.map(id => `<li>✓ ${esc(byId(id)?.title || id)}</li>`).join('')}</ul>
         <a class="btn btn-block" href="#/learning">Start my first lesson →</a>
@@ -1159,13 +1151,13 @@
 
   function submitFeedback(f) {
     const picked = f.querySelector('input[name=rate]:checked');
-    if (!picked) { toast('Pick a face first — it takes one tap.', { icon: '👆' }); return; }
+    if (!picked) { toast('Pick a rating first — it takes one tap.'); return; }
     const rating = +picked.value;
     const happy = rating >= 4;
     api('/feedback', { method: 'POST', body: { rating, message: $('#fb', f).value.trim() } })
-      .catch(err => toast('Your feedback couldn’t be saved: ' + esc(err.message), { icon: '⚠️', timeout: 5000 }));
+      .catch(err => toast('Your feedback couldn’t be saved: ' + esc(err.message), { timeout: 5000 }));
     $('#modalCard').innerHTML = `<button class="modal-x" type="button" data-action="close-modal" aria-label="Close">✕</button>
-      <div class="success"><div class="trophy">${happy ? '💜' : '🛠️'}</div>
+      <div class="success">
         <h2 class="h2">${happy ? 'You just made our day!' : 'Thank you for being honest.'}</h2>
         <p class="lead">${happy ? 'We’ll keep raising the bar so UpClick stays your number 1.' : 'We read every response, and this one goes straight to the team to make UpClick better.'}</p>
         <button class="btn btn-block" type="button" data-action="close-modal">Back to UpClick</button></div>`;
@@ -1185,7 +1177,7 @@
         const art = $(`.learn-item[data-id="${id}"]`);
         const c = byId(id);
         if (art && c) art.outerHTML = learnItem(c);
-        toast('That lesson couldn’t be saved: ' + esc(err.message), { icon: '⚠️', timeout: 5000 });
+        toast('That lesson couldn’t be saved: ' + esc(err.message), { timeout: 5000 });
       });
   }
 
@@ -1219,10 +1211,10 @@
         if (completing) { btn.closest('.lesson').classList.add('fresh'); celebrate('small', btn); }
       }
     }
-    if (completing && before < 50 && after >= 50 && !justFinished) toast('Halfway there — keep that streak going!', { icon: '💪' });
+    if (completing && before < 50 && after >= 50 && !justFinished) toast('Halfway there — keep that streak going!');
     if (justFinished) {
       setTimeout(() => {
-        openModal(`<div class="success"><div class="trophy">🏆</div>
+        openModal(`<div class="success"><div class="seal" aria-hidden="true">★</div>
           <p class="eyebrow">Course complete</p>
           <h2 class="h2">You did it${state.user ? ', ' + first(state.user.name) : ''}!</h2>
           <p class="lead">You finished <strong>${esc(c.title)}</strong> — all ${total} lessons. Your certificate is ready.</p>
@@ -1242,7 +1234,7 @@
       for (let i = 0; i < 7; i++) {
         const h = document.createElement('span');
         h.className = 'float-heart';
-        h.textContent = ['💜', '💖', '💗', '🤍'][i % 4];
+        h.innerHTML = `<svg viewBox="0 0 24 22" width="26" height="24" aria-hidden="true"><path d="M12 21 C5 15 1 11 1 6.5 1 3.4 3.4 1 6.5 1 8.6 1 10.6 2.1 12 4 13.4 2.1 15.4 1 17.5 1 20.6 1 23 3.4 23 6.5 23 11 19 15 12 21Z" fill="${['#9a0da3', '#f06fb8', '#d36ad8', '#4b3f8f'][i % 4]}"/></svg>`;
         h.style.left = x + 'px';
         h.style.top = y + 'px';
         h.style.setProperty('--dx', (Math.random() * 200 - 100) + 'px');
@@ -1253,8 +1245,8 @@
       }
     }
     btn.classList.remove('beat'); void btn.offsetWidth; btn.classList.add('beat');
-    $('#loveCount').textContent = `${plural(loves, 'heart')} sent 💜`;
-    if (loves % 10 === 0) { celebrate('medium'); toast(`${loves} hearts! You really love us.`, { icon: '💜' }); }
+    $('#loveCount').textContent = `${plural(loves, 'heart')} sent`;
+    if (loves % 10 === 0) { celebrate('medium'); toast(`${loves} hearts! You really love us.`); }
   }
 
   function openFeedback() {
@@ -1262,7 +1254,7 @@
       <form id="feedbackForm">
         <fieldset style="border:0;padding:0;margin:0"><legend class="sr-only">Rate UpClick from 1 to 5</legend>
         <div class="faces">
-          ${['😞', '😕', '😐', '🙂', '🤩'].map((f, i) => `<label class="face"><input type="radio" name="rate" value="${i + 1}"><span aria-hidden="true">${f}</span><span class="sr-only">${i + 1} out of 5</span></label>`).join('')}
+          ${['Poor', 'Fair', 'Okay', 'Good', 'Great'].map((f, i) => `<label class="face"><input type="radio" name="rate" value="${i + 1}"><span class="face-box"><strong>${i + 1}</strong><small>${f}</small></span></label>`).join('')}
         </div></fieldset>
         <label class="lbl" for="fb">Anything we could do better? <span class="hint">(optional)</span></label>
         <textarea id="fb" class="input" rows="3"></textarea>
@@ -1273,8 +1265,7 @@
   function logout() {
     const s = state.session;
     const certs = Object.values(state.enrolled).filter(e => e.completedAt).length;
-    openModal(`<div class="success"><div class="trophy">👋</div>
-      <h2 class="h2">See you soon, ${first(state.user?.name)}!</h2>
+    openModal(`<div class="success"><h2 class="h2">See you soon, ${first(state.user?.name)}!</h2>
       <p>Here’s what you achieved this session:</p>
       <ul class="session-stats">
         <li><strong>${s.lessons}</strong><span>lessons done</span></li>
@@ -1321,7 +1312,7 @@
       case 'logout': logout(); break;
       case 'confirm-logout':
         endSession(false); closeModal(false);
-        toast('You’re logged out. Your progress is saved to your account.', { icon: '👋' });
+        toast('You’re logged out. Your progress is saved to your account.');
         if (location.hash === '#/' || location.hash === '') render(); else location.hash = '#/';
         break;
       case 'confirm-checkout': submitCheckout(t); break;
@@ -1336,14 +1327,14 @@
       case 'print': window.print(); break;
       case 'share': {
         const c = byId(id);
-        const text = `I just earned my UpClick certificate for "${c.title}"! 🎉`;
+        const text = `I just earned my UpClick certificate for "${c.title}"!`;
         (navigator.clipboard?.writeText(text) || Promise.reject())
-          .then(() => toast('Share message copied — go show it off!', { icon: '📋' }))
-          .catch(() => toast(esc(text), { icon: '📋', timeout: 6000 }));
+          .then(() => toast('Share message copied — go show it off!'))
+          .catch(() => toast(esc(text), { timeout: 6000 }));
         break;
       }
-      case 'social': toast(`${esc(t.dataset.p)} sign-in isn’t connected in this prototype — use email for now.`, { icon: 'ℹ️' }); break;
-      case 'forgot': e.preventDefault(); toast('Password reset isn’t available in this prototype.', { icon: 'ℹ️' }); break;
+      case 'social': toast(`${esc(t.dataset.p)} sign-in isn’t connected in this prototype — use email for now.`); break;
+      case 'forgot': e.preventDefault(); toast('Password reset isn’t available in this prototype.'); break;
       case 'toggle-pw': {
         const input = $('#password');
         const show = input.type === 'password';
@@ -1375,7 +1366,6 @@
 
   function viewOffline(message) {
     return `<section class="container empty-state">
-      <span class="big-emoji" aria-hidden="true">🔌</span>
       <h1 class="h2">Can’t reach the UpClick server</h1>
       <p class="lead" style="margin-inline:auto">${esc(message)} Start it from the project folder with
         <code>uvicorn main:app --reload</code>, then open <a href="http://localhost:8000">http://localhost:8000</a>.</p>
