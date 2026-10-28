@@ -2,7 +2,7 @@ import os
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import JSON, Column
+from sqlalchemy import JSON, Column, UniqueConstraint
 from sqlmodel import Field, Session, SQLModel, create_engine
 
 def _database_url() -> str:
@@ -63,11 +63,24 @@ class Enrolment(SQLModel, table=True):
     completed_at: Optional[datetime] = None
 
 
-class Feedback(SQLModel, table=True):
+class Review(SQLModel, table=True):
+    __table_args__ = (UniqueConstraint("user_id", "course_id"),)
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    course_id: str = Field(foreign_key="course.id", index=True)
+    rating: int
+    comment: str = ""
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class ContactMessage(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: Optional[int] = Field(default=None, foreign_key="user.id")
-    rating: int
-    message: str = ""
+    name: str
+    email: str
+    topic: str
+    message: str
     created_at: datetime = Field(default_factory=utcnow)
 
 

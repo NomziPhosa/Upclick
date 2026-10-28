@@ -22,10 +22,14 @@
     </button>
 
     <nav id="nav" class="nav" aria-label="Main">
+      <form class="nav-search" id="navSearch" role="search">
+        <label class="sr-only" for="navQ">Search all courses</label>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <input id="navQ" type="search" placeholder="Search courses" autocomplete="off" enterkeyhint="search">
+      </form>
       <a href="#/courses" data-route="courses">Courses</a>
       <a href="#/about" data-route="about">About</a>
-      <a href="#/learning" data-route="learning">My Learning</a>
-      <a href="#/cart" data-route="cart" class="cart-link">Cart <span class="badge" id="cartBadge" hidden>0</span></a>
+      <a href="#/help" data-route="help">Help</a>
       <span id="authSlot" class="auth-slot"></span>
     </nav>
   </header>
@@ -36,9 +40,9 @@
     <a href="#/" class="logo logo-sm" aria-label="UpClick home">UPClick</a>
     <nav class="footer-links" aria-label="Footer">
       <a href="#/courses">Courses</a>
+      <a href="#/profile">Profile</a>
       <a href="#/about">About</a>
-      <a href="#/learning">My Learning</a>
-      <a href="#/signup">Sign up</a>
+      <a href="#/help">Help &amp; FAQ</a>
     </nav>
     <p class="footer-note">© 2026 UpClick · IMY 320 prototype — no real payments are taken.</p>
   </footer>

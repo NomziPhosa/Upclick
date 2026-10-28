@@ -18,20 +18,33 @@
     },
     set(key, value) {
       try { localStorage.setItem('upclick:' + key, JSON.stringify(value)); } catch { }
+    },
+    del(key) {
+      try { localStorage.removeItem('upclick:' + key); } catch { }
+    }
+  };
+  const session = {
+    get(key, fallback) {
+      try { const v = sessionStorage.getItem('upclick:' + key); return v ? JSON.parse(v) : fallback; }
+      catch { return fallback; }
+    },
+    set(key, value) {
+      try { sessionStorage.setItem('upclick:' + key, JSON.stringify(value)); } catch { }
+    },
+    del(key) {
+      try { sessionStorage.removeItem('upclick:' + key); } catch { }
     }
   };
   const state = {
-    cart: store.get('cart', []),
     enrolled: {},
+    myReviews: {},
     user: null,
     token: store.get('token', null),
-    session: (() => { try { return JSON.parse(sessionStorage.getItem('upclick:session')) || { lessons: 0, enrolled: 0 }; } catch { return { lessons: 0, enrolled: 0 }; } })(),
-    catalog: { q: '', category: 'All', level: 'All', sort: 'students', dir: 'desc' }
+    session: session.get('session', { lessons: 0, enrolled: 0 }),
+    catalog: { q: '', category: 'All', level: 'All', sort: 'students', dir: 'desc' },
+    profile: { filter: 'all', sort: 'recent' }
   };
-  const save = () => {
-    store.set('cart', state.cart);
-    try { sessionStorage.setItem('upclick:session', JSON.stringify(state.session)); } catch { }
-  };
+  const save = () => { session.set('session', state.session); };
 
   class ApiError extends Error {
     constructor(message, status) { super(message); this.status = status; }
@@ -66,21 +79,30 @@
     completedAt: e.completed_at ? Date.parse(e.completed_at) : null
   });
   async function loadEnrolments() {
-    const list = await api('/me/enrolments');
+    const [list, reviews] = await Promise.all([api('/me/enrolments'), api('/me/reviews')]);
     state.enrolled = Object.fromEntries(list.map(e => [e.course_id, fromApi(e)]));
+    state.myReviews = Object.fromEntries(reviews.map(r => [r.course_id, r]));
   }
   function startSession(res) {
     state.token = res.token;
     state.user = res.user;
     store.set('token', res.token);
+    loadWatched();
   }
   function endSession(expired) {
+    if (state.user) {
+      store.del(`watch:${state.user.id}`);
+      store.del(`last:${state.user.id}`);
+    }
     state.token = null;
     state.user = null;
     state.enrolled = {};
+    state.myReviews = {};
     state.session = { lessons: 0, enrolled: 0 };
-    save();
-    store.set('token', null);
+    watched = {};
+    session.del('session');
+    session.del('intent');
+    store.del('token');
     updateNav();
     if (expired) toast('Your session has expired — please log in again.');
   }
@@ -100,11 +122,16 @@
     const n = esc(needle).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return safe.replace(new RegExp(`(${n})`, 'gi'), '<mark>$1</mark>');
   };
-  const totals = items => {
-    const subtotal = items.reduce((s, c) => s + c.price, 0);
-    const discount = items.length >= 2 ? Math.round(subtotal * 0.1) : 0;
-    return { subtotal, discount, total: subtotal - discount };
+  const RETURNING_RATE = 0.1;
+  const quote = c => {
+    const returning = Object.keys(state.enrolled).length > 0;
+    const discount = returning ? Math.round(c.price * RETURNING_RATE) : 0;
+    return { price: c.price, discount, total: c.price - discount, returning };
   };
+  const pctOf = (c, e) => Math.round(e.done.length / c.modules.length * 100);
+  const nextLessonOf = (c, e) => c.modules.findIndex((_, i) => !e.done.includes(i));
+  const fmtDate = ms => new Date(ms).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric' });
+  const stars = n => `<span class="stars" aria-label="${n} out of 5 stars"><span aria-hidden="true">${'★'.repeat(n)}<span class="stars-off">${'★'.repeat(5 - n)}</span></span></span>`;
   const ICON_SEARCH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>';
   const CHECK_SVG = '<svg class="success-check" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="46"/><path d="M30 52l13 13 27-29"/></svg>';
   const HEART_SVG = `<svg viewBox="0 0 100 92" aria-hidden="true">
@@ -124,15 +151,15 @@
       <circle cx="62" cy="58" r="3" fill="#fff" opacity=".35"/>
     </svg>`;
 
+  const initials = name => String(name).replace(/^(Dr|Prof)\.\s*/, '').split(/\s+/).map(w => w[0] || '').join('').slice(0, 2).toUpperCase();
   const levelHTML = l => `<span class="level l${LEVELS[l]}"><span class="bars" aria-hidden="true"><i></i><i></i><i></i></span>${l}</span>`;
   const ratingHTML = c => c.rating > 0
     ? `<span class="rating"><span class="star" aria-hidden="true">★</span> ${c.rating.toFixed(1)}</span>`
     : '<span class="tag tag-new">New</span>';
 
-  function cartButton(c, extra = '') {
-    if (state.enrolled[c.id]) return `<a class="btn btn-outline ${extra}" href="#/learning">Continue</a>`;
-    if (state.cart.includes(c.id)) return `<a class="btn added ${extra}" href="#/cart">✓ In cart</a>`;
-    return `<button class="btn ${extra}" type="button" data-action="add" data-id="${c.id}">Add to cart</button>`;
+  function enrolButton(c, extra = '', label = 'Enrol') {
+    if (state.enrolled[c.id]) return `<a class="btn btn-outline ${extra}" href="#/learn/${c.id}">Continue</a>`;
+    return `<button class="btn ${extra}" type="button" data-action="enrol" data-id="${c.id}">${label}</button>`;
   }
 
   function field({ id, label, type = 'text', ac = 'off', value = '', rule, extra = '' }) {
@@ -164,7 +191,7 @@
       <div class="cell" data-label="Duration">${c.hours} h</div>
       <div class="cell" data-label="Rating">${ratingHTML(c)}</div>
       <div class="cell price" data-label="Price">${money(c.price)}</div>
-      <div class="cell-action">${cartButton(c, 'btn-sm')}</div>
+      <div class="cell-action">${enrolButton(c, 'btn-sm')}</div>
     </li>`;
   }
 
@@ -183,7 +210,7 @@
         <p class="lead">Short, hands-on courses that take you from your first line of code to real projects — with a certificate waiting at the finish line.</p>
         <div class="actions">
           <a class="btn" href="#/courses">Browse courses</a>
-          <a class="btn btn-outline" href="${signedIn ? '#/learning' : '#/signup'}">${signedIn ? 'Continue learning' : 'Sign up free'}</a>
+          <a class="btn btn-outline" href="${signedIn ? '#/profile' : '#/signup'}">${signedIn ? 'Continue learning' : 'Sign up free'}</a>
         </div>
       </div>
       <div>
@@ -217,9 +244,9 @@
     <section class="container">
       <h2 class="h2">How it works</h2>
       <ol class="steps">
-        <li class="reveal"><div><h3>Pick a course</h3><p>Search and sort the full catalogue to find exactly what you need.</p></div></li>
-        <li class="reveal"><div><h3>Learn by doing</h3><p>Bite-sized lessons with real code. Tick them off and watch your progress grow.</p></div></li>
-        <li class="reveal"><div><h3>Earn your certificate</h3><p>Finish the last lesson and claim a certificate with your name on it.</p></div></li>
+        <li class="reveal"><div><h3>Pick a course and enrol</h3><p>Search the catalogue, watch a free preview lesson, then enrol with one button.</p></div></li>
+        <li class="reveal"><div><h3>Watch and code along</h3><p>Short video lessons with real code. Your progress per course is always visible in your Profile.</p></div></li>
+        <li class="reveal"><div><h3>Earn your certificate</h3><p>Finish the last lesson to earn a certificate with your name on it, kept in your Profile for good.</p></div></li>
       </ol>
     </section>
 
@@ -300,42 +327,87 @@
     if (sel) sel.value = `${sort}:${dir}`;
   }
 
+  function previewCard(c) {
+    return `<button class="preview-card" type="button" data-action="play-lesson" data-id="${c.id}" data-i="0" aria-label="Watch the free preview: lesson 1, ${esc(c.modules[0])}">
+      <span class="pc-screen"><span class="pc-file">${esc(lessonCode(c, 0).file)}</span>
+        <span class="pc-play">${PLAY_SVG}</span>
+        <span class="pc-cam" aria-hidden="true">${esc(initials(c.instructor))}</span></span>
+      <span class="pc-cap"><strong>${state.enrolled[c.id] ? 'Lesson 1' : 'Free preview'}</strong> · ${esc(c.modules[0])} · ${fmtTime(lessonSecs(c, 0))}</span>
+    </button>`;
+  }
+
   function viewCourse(id) {
     const c = byId(id);
     if (!c) return viewNotFound();
-    const owned = !!state.enrolled[c.id];
-    const inCart = state.cart.includes(c.id);
+    const e = state.enrolled[c.id];
+    const owned = !!e;
+    const q = quote(c);
+    const totalSecs = c.modules.reduce((s, _, i) => s + lessonSecs(c, i), 0);
     const related = COURSES.filter(x => x.category === c.category && x.id !== c.id).slice(0, 3);
+    const forWho = { Beginner: 'No experience needed — perfect if this is your first time with the topic.', Intermediate: 'You know the basics and want to build real projects with confidence.', Advanced: 'You are comfortable coding and want deep, practical skills.' }[c.level];
     return `
     <section class="container">
       <nav class="breadcrumb" aria-label="Breadcrumb"><a href="#/courses">← All courses</a></nav>
       <div class="detail">
         <div>
           <span class="tag">${esc(c.category)}</span>
-          <h1 class="h1" style="margin-top:14px">${esc(c.title)}</h1>
+          <h1 class="h1" style="margin-top:10px">${esc(c.title)}</h1>
           <p class="lead dark">${esc(c.description)}</p>
           <ul class="meta-row">
             <li>${levelHTML(c.level)}</li>
-            <li>${c.hours} hours</li>
+            <li>${c.hours} hours · ${plural(c.modules.length, 'video lesson')}</li>
             <li>${ratingHTML(c)} (${c.students.toLocaleString('en-US')} learners)</li>
             <li>Taught by <strong>${esc(c.instructor)}</strong></li>
           </ul>
-          <h2 class="h3">Course outline</h2>
-          <ol class="modules">
-            ${c.modules.map((m, i) => `<li><span class="mod-num">${String(i + 1).padStart(2, '0')}</span><span>${esc(m)}</span><span class="mod-time">${20 + (i * 7) % 25} min</span></li>`).join('')}
-          </ol>
-          <div class="finish-note"><span>Finish all ${c.modules.length} lessons to earn your personalised UpClick certificate.</span></div>
+          <nav class="section-tabs" aria-label="On this page">
+            <button type="button" data-action="jump" data-target="sec-overview">Overview</button>
+            <button type="button" data-action="jump" data-target="sec-curriculum">Curriculum</button>
+            <button type="button" data-action="jump" data-target="sec-reviews">Reviews</button>
+          </nav>
+
+          <section id="sec-overview" class="course-sec">
+            <h2 class="h3">Overview</h2>
+            <div class="overview-grid">
+              <div><h3 class="mini-h">What you’ll learn</h3><ul class="perks">${c.modules.slice(0, 4).map(m => `<li>${esc(m)}</li>`).join('')}</ul></div>
+              <div><h3 class="mini-h">Who it’s for</h3><p>${forWho}</p></div>
+            </div>
+          </section>
+
+          <section id="sec-curriculum" class="course-sec">
+            <h2 class="h3">Curriculum <span class="hint">${plural(c.modules.length, 'lesson')} · ${fmtTime(totalSecs)} of video</span></h2>
+            <ol class="modules">
+              ${c.modules.map((m, i) => {
+                const playable = owned || i === 0;
+                const done = owned && e.done.includes(i);
+                return `<li class="${done ? 'mod-done' : ''}"><span class="mod-num">${String(i + 1).padStart(2, '0')}</span><span>${esc(m)}${done ? ' <span class="mod-tick" aria-label="completed">✓</span>' : ''}</span><span class="mod-time">${playable
+                  ? `<button class="mod-play" type="button" data-action="play-lesson" data-id="${c.id}" data-i="${i}" aria-label="${owned ? 'Play' : 'Preview'} lesson ${i + 1}: ${esc(m)}">${PLAY_SVG}${owned ? 'Play' : 'Preview'}</button>`
+                  : `<span class="mod-lock" title="Enrol to unlock">${LOCK_SVG}<span class="sr-only">Locked</span></span>`}<span class="mod-len">${fmtTime(lessonSecs(c, i))}</span></span></li>`;
+              }).join('')}
+            </ol>
+            <div class="finish-note"><span>${owned && e.completedAt ? 'You completed this course. Your certificate is saved in Profile → Certificates.' : `Finish all ${c.modules.length} lessons to earn your personalised certificate. It stays in your Profile under Certificates.`}</span></div>
+          </section>
+
+          <section id="sec-reviews" class="course-sec">
+            <h2 class="h3">Reviews</h2>
+            <div id="reviews" data-id="${c.id}"><p class="hint">Loading reviews…</p></div>
+          </section>
         </div>
-        <aside class="buy-box" aria-label="Enrol">
-          <div class="price-lg">${money(c.price)}</div>
-          <p class="hint">One payment · lifetime access</p>
-          ${cartButton(c, 'btn-block')}
-          ${!owned && !inCart ? `<button class="btn btn-outline btn-block" type="button" data-action="buy-now" data-id="${c.id}">Enrol now</button>` : ''}
+        <aside class="buy-box" aria-label="${owned ? 'Your progress' : 'Enrol'}">
+          ${previewCard(c)}
+          ${owned
+            ? `<p class="eyebrow" style="margin-top:14px">${e.completedAt ? 'Completed' : 'You’re enrolled'}</p>
+               <div class="progress" role="progressbar" aria-label="Course progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pctOf(c, e)}"><i style="width:${pctOf(c, e)}%"></i></div>
+               <p class="hint">${e.done.length} of ${plural(c.modules.length, 'lesson')} done</p>
+               <a class="btn btn-block" href="#/learn/${c.id}">${e.completedAt ? 'Open course' : 'Continue learning'}</a>
+               ${e.completedAt ? `<a class="btn btn-ghost btn-block" href="#/certificate/${c.id}">View certificate</a>` : ''}`
+            : `<div class="price-lg">${q.discount ? `<s class="was">${money(q.price)}</s> ` : ''}${money(q.total)}</div>
+               <p class="hint">${q.discount ? 'Returning learner: 10% off · ' : ''}One payment · lifetime access</p>
+               ${enrolButton(c, 'btn-block', `Enrol now · ${money(q.total)}`)}`}
           <ul class="perks">
-            <li>${c.modules.length} hands-on lessons</li>
-            <li>Certificate of completion</li>
+            <li>${c.modules.length} video lessons with code-along exercises</li>
+            <li>Certificate of completion, kept in your Profile</li>
             <li>Learn at your own pace</li>
-            <li>Bundle 2+ courses for 10% off</li>
+            <li>10% off every course after your first</li>
           </ul>
         </aside>
       </div>
@@ -346,85 +418,81 @@
     </section>` : ''}`;
   }
 
-  function viewCart() {
-    const items = state.cart.map(byId).filter(Boolean);
-    if (!items.length) {
-      return `<section class="container empty-state">
-        <h1 class="h2">Your cart is empty</h1>
-        <p class="lead" style="margin-inline:auto">Every great developer started with one course. Find yours in under a minute.</p>
-        <div class="actions"><a class="btn" href="#/courses">Browse courses</a></div>
-      </section>`;
-    }
-    const { subtotal, discount, total } = totals(items);
-    return `
-    <section class="container">
-      <h1 class="h1">Your <span class="shadow-text">cart</span></h1>
-      <div class="cart-layout">
-        <ul class="cart-list">
-          ${items.map(c => `<li class="cart-item" data-id="${c.id}">
-            <div><a href="#/course/${c.id}">${esc(c.title)}</a><div class="course-sub">${c.level} · ${c.hours} h · ${esc(c.instructor)}</div></div>
-            <div class="cart-right"><span class="price">${money(c.price)}</span>
-              <button class="icon-btn" type="button" data-action="remove" data-id="${c.id}" aria-label="Remove ${esc(c.title)}">✕</button></div>
-          </li>`).join('')}
-        </ul>
-        <aside class="buy-box" aria-label="Order summary">
-          <h2 class="h3">Order summary</h2>
-          <div class="sum-row"><span>Subtotal (${plural(items.length, 'course')})</span><span>${money(subtotal)}</span></div>
-          ${discount
-            ? `<div class="sum-row accent"><span>Bundle discount (10%)</span><span>−${money(discount)}</span></div>`
-            : `<div class="unlock">Add one more course to unlock <strong>10% off</strong><div class="meter"><i></i></div></div>`}
-          <div class="sum-row total"><span>Total</span><span>${money(total)}</span></div>
-          <button class="btn btn-block" type="button" data-action="checkout">Checkout</button>
-          <a class="btn btn-ghost btn-block" href="#/courses">Keep browsing</a>
-        </aside>
-      </div>
-    </section>`;
+  function reviewsHTML(c, data) {
+    const e = state.enrolled[c.id];
+    const mine = state.myReviews[c.id];
+    const counts = [5, 4, 3, 2, 1].map(n => [n, data.reviews.filter(r => r.rating === n).length]);
+    const summary = data.count
+      ? `<div class="rv-summary"><div class="rv-avg"><strong>${data.average.toFixed(1)}</strong>${stars(Math.round(data.average))}<span class="hint">${plural(data.count, 'learner review')}</span></div>
+          <ul class="rv-bars">${counts.map(([n, k]) => `<li><span>${n}</span><span class="rv-bar"><i style="width:${data.count ? k / data.count * 100 : 0}%"></i></span><span class="hint">${k}</span></li>`).join('')}</ul></div>`
+      : '<p class="hint">No learner reviews yet.</p>';
+    const form = e ? reviewForm(c, mine)
+      : `<p class="rv-cta">${state.user ? 'Enrol in this course to rate it.' : '<a href="#/login">Log in</a> and enrol to rate this course.'}</p>`;
+    const list = data.reviews.length ? `<ul class="rv-list">${data.reviews.map(r => `<li>
+        <div class="rv-head"><strong>${esc(r.name)}${r.mine ? ' <span class="tag">You</span>' : ''}</strong>${stars(r.rating)}<span class="hint">${fmtDate(Date.parse(r.updated_at))}</span></div>
+        ${r.comment ? `<p>${esc(r.comment)}</p>` : ''}</li>`).join('')}</ul>` : '';
+    return summary + form + list;
+  }
+
+  function reviewForm(c, mine) {
+    return `<form class="rv-form" id="reviewForm" data-id="${c.id}">
+      <fieldset><legend class="mini-h">${mine ? 'Update your rating' : 'Rate this course'}</legend>
+        <div class="star-pick">${[5, 4, 3, 2, 1].map(n => `<input type="radio" id="rv${n}" name="rating" value="${n}" ${mine && mine.rating === n ? 'checked' : ''}><label for="rv${n}" title="${n} star${n > 1 ? 's' : ''}"><span class="sr-only">${n} out of 5</span>★</label>`).join('')}</div>
+      </fieldset>
+      <label class="lbl" for="rvText">What should other learners know? <span class="hint">(optional)</span></label>
+      <textarea class="input" id="rvText" maxlength="1000" rows="3">${mine ? esc(mine.comment) : ''}</textarea>
+      <p class="error" id="rvErr" role="alert"></p>
+      <button class="btn btn-sm" type="submit">${mine ? 'Update review' : 'Post review'}</button>
+    </form>`;
   }
 
   function viewAuth(mode) {
     if (state.user) {
       return `<section class="container empty-state signed-in">
         <h1 class="h2">You’re signed in as ${esc(state.user.name)}</h1>
-        <div class="actions"><a class="btn" href="#/learning">Go to My Learning</a><button class="btn btn-outline" type="button" data-action="logout">Log out</button></div>
+        <div class="actions"><a class="btn" href="#/profile">Go to my Profile</a><button class="btn btn-outline" type="button" data-action="logout">Log out</button></div>
       </section>`;
     }
     const signup = mode === 'signup';
+    const intent = session.get('intent', null);
+    const intentCourse = intent && byId(intent.enrol);
     return `
-    <section class="split divided">
-      <div>
-        <h1 class="display">Let’s<br>get<br><span class="shadow-text">coding</span></h1>
+    <section class="split divided auth-split">
+      <div class="auth-side">
+        <h1 class="display auth-display">Let’s<br>get<br><span class="shadow-text">coding</span></h1>
         <ul class="ticks">
           <li>Free account, no card needed</li>
-          <li>Track your progress across courses</li>
-          <li>Certificates with your name on them</li>
+          <li>Progress saved for every course</li>
+          <li>Certificates kept in your Profile</li>
         </ul>
       </div>
       <div>
         <div class="auth-card">
+          ${intentCourse ? `<p class="auth-intent">${signup ? 'Create an account' : 'Log in'} to enrol in <strong>${esc(intentCourse.title)}</strong>.</p>` : ''}
           <div class="tabs" role="tablist" aria-label="Account">
             <a class="tab" role="tab" href="#/signup" aria-selected="${signup}">Sign up</a>
             <a class="tab" role="tab" href="#/login" aria-selected="${!signup}">Log in</a>
           </div>
-          <h2 class="auth-title">${signup ? 'SIGNUP' : 'LOGIN'}</h2>
+          <div class="social">
+            <button class="btn btn-outline btn-sm" type="button" data-action="social" data-p="Google">Continue with Google</button>
+            <button class="btn btn-outline btn-sm" type="button" data-action="social" data-p="GitHub">Continue with GitHub</button>
+          </div>
+          <div class="divider">or use your email</div>
           <form id="authForm" data-mode="${mode}" novalidate>
+            <h2 class="sr-only">${signup ? 'Sign up' : 'Log in'}</h2>
             ${signup ? field({ id: 'name', label: 'Full name', ac: 'name', rule: 'name' }) : ''}
             ${field({ id: 'email', label: 'Email', type: 'email', ac: 'email', rule: 'email' })}
             <div class="field has-toggle" data-field="password">
-              <label for="password">Password</label>
+              <label for="password">Password ${signup ? '<span class="hint">(8+ characters)</span>' : ''}</label>
               <input class="input" id="password" name="password" type="password" autocomplete="${signup ? 'new-password' : 'current-password'}"
                 data-rule="${signup ? 'password' : 'loginPassword'}" aria-describedby="password-err${signup ? ' pw-strength' : ''}" required>
               <button class="toggle-pw" type="button" data-action="toggle-pw" aria-controls="password" aria-pressed="false">Show</button>
-              ${signup ? `<div class="strength" id="pw-strength"><div class="meter"><i id="pwMeter"></i></div><span id="pwLabel">8+ characters</span></div>` : ''}
+              ${signup ? `<div class="strength" id="pw-strength"><div class="meter"><i id="pwMeter"></i></div><span id="pwLabel">Strength</span></div>` : ''}
               <p class="error" id="password-err"></p>
             </div>
             ${signup ? '' : '<div class="form-row"><a class="small-link" href="#" data-action="forgot">Forgot password?</a></div>'}
-            <button class="btn btn-block" type="submit">Continue</button>
+            <button class="btn btn-block" type="submit">${signup ? 'Create account' : 'Log in'}</button>
           </form>
-          <div class="divider">or continue with</div>
-          <div class="social">
-            <button class="btn btn-outline btn-sm" type="button" data-action="social" data-p="Google">Google</button>
-            <button class="btn btn-outline btn-sm" type="button" data-action="social" data-p="GitHub">GitHub</button>
-          </div>
           <p class="switch">${signup ? 'Already have an account? <a href="#/login">Log in</a>' : 'New to UpClick? <a href="#/signup">Create an account</a>'}</p>
         </div>
       </div>
@@ -435,7 +503,7 @@
     const loves = store.get('loves', 0);
     const values = [
       ['Learn by doing', 'Every lesson ends with code you wrote yourself. Reading is good; building is better.'],
-      ['Clear, honest pricing', 'One price, lifetime access, and a bundle discount when you take more than one course.'],
+      ['Clear, honest pricing', 'One price, lifetime access, and 10% off every course after your first.'],
       ['Celebrate progress', 'Small wins add up. We mark every milestone, and every finished course ends with your own certificate.'],
       ['Listen and improve', 'Your feedback shapes what we build next. Tell us what works and what doesn’t.']
     ];
@@ -447,7 +515,7 @@
         <p class="lead dark">We aim to provide the best learning experience possible. If you think you can find better, tell us — so we can become the number <span class="accent strong">1</span> brand in your life again.</p>
         <div class="actions">
           <a class="btn" href="#/courses">Start learning</a>
-          <button class="btn btn-outline" type="button" data-action="feedback">Tell us how we’re doing</button>
+          <a class="btn btn-outline" href="#/help">Get help or contact us</a>
         </div>
       </div>
       <div class="heart-wrap">
@@ -474,49 +542,284 @@
     const shown = startPct ?? pct;
     return `<article class="learn-item ${e.completedAt ? 'complete' : ''}" data-id="${c.id}">
       <div class="learn-head">
-        <div><h2 class="h3">${esc(c.title)}</h2><p class="course-sub">${esc(c.instructor)} · ${plural(c.modules.length, 'lesson')}</p></div>
+        <div><p class="eyebrow">My course</p><h1 class="h2 learn-title">${esc(c.title)}</h1><p class="course-sub">${esc(c.instructor)} · ${plural(c.modules.length, 'video lesson')} · <a href="#/course/${c.id}">Course page and reviews</a></p></div>
         <div class="pct" data-pct>${shown}%</div>
       </div>
       <div class="progress" role="progressbar" aria-label="${esc(c.title)} progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${shown}%"></i></div>
       <ol class="lessons">
         ${c.modules.map((m, i) => {
           const d = e.done.includes(i);
+          const secs = lessonSecs(c, i);
+          const part = !d && watched[watchKey(c.id, i)] ? Math.round(watched[watchKey(c.id, i)] / secs * 100) : 0;
           return `<li class="lesson ${d ? 'done' : ''}">
             <button class="check" type="button" data-action="lesson" data-id="${c.id}" data-i="${i}" aria-pressed="${d}" aria-label="Lesson ${i + 1}: ${esc(m)} — ${d ? 'completed' : 'mark complete'}">${d ? '✓' : ''}</button>
-            <span class="lesson-title">${esc(m)}</span></li>`;
+            <button class="lesson-play" type="button" data-action="play-lesson" data-id="${c.id}" data-i="${i}" aria-label="Play video for lesson ${i + 1}: ${esc(m)}, ${fmtTime(secs)}${part ? `, ${part}% watched` : ''}">
+              <span class="play-dot">${PLAY_SVG}</span><span class="lesson-title">${esc(m)}</span><span class="lesson-len">${part ? `${part}% · ` : ''}${fmtTime(secs)}</span>
+              ${part ? `<span class="lesson-watch"><i style="width:${part}%"></i></span>` : ''}
+            </button></li>`;
         }).join('')}
       </ol>
       ${e.completedAt
         ? `<a class="btn" href="#/certificate/${c.id}">View certificate</a>`
-        : `<button class="btn btn-outline btn-sm" type="button" data-action="next-lesson" data-id="${c.id}">Complete next lesson</button>`}
+        : `<button class="btn btn-sm" type="button" data-action="next-lesson" data-id="${c.id}"><span class="btn-ic">${PLAY_SVG}</span>Play next lesson</button>`}
     </article>`;
   }
 
   function viewLoginNeeded(title) {
     return `<section class="container empty-state">
       <h1 class="h2">${title}</h1>
-      <p class="lead" style="margin-inline:auto">Your courses, progress and certificates are saved to your account, so you can learn on any device.</p>
+      <p class="lead" style="margin-inline:auto">Your courses, progress and certificates are saved to your account, so you can pick up on any device.</p>
       <div class="actions"><a class="btn" href="#/login">Log in</a><a class="btn btn-outline" href="#/signup">Create a free account</a></div>
     </section>`;
   }
 
-  function viewLearning() {
-    if (!state.user) return viewLoginNeeded('Log in to see your learning');
-    const ids = Object.keys(state.enrolled).filter(byId);
-    if (!ids.length) {
-      return `<section class="container empty-state">
-        <h1 class="h2">Nothing here yet</h1>
-        <p class="lead" style="margin-inline:auto">Enrol in a course and your lessons, progress and certificates will live here.</p>
-        <div class="actions"><a class="btn" href="#/courses">Find a course</a></div>
-      </section>`;
-    }
-    const done = ids.filter(id => state.enrolled[id].completedAt).length;
-    return `<section class="container">
-      <p class="eyebrow">${state.user ? `${first(state.user.name)}’s dashboard` : 'Dashboard'}</p>
-      <h1 class="h1">My <span class="shadow-text">learning</span></h1>
-      <p class="lead">${plural(ids.length, 'course')} · ${plural(done, 'certificate')} earned. Tick off lessons as you go — finishing a course unlocks your certificate.</p>
-      ${ids.map(id => learnItem(byId(id))).join('')}
+  function myCourses() {
+    return Object.keys(state.enrolled).map(byId).filter(Boolean);
+  }
+
+  function lastActive() {
+    const last = state.user ? store.get(`last:${state.user.id}`, null) : null;
+    const list = myCourses().filter(c => !state.enrolled[c.id].completedAt);
+    if (last && list.some(c => c.id === last.id)) return byId(last.id);
+    return list.sort((a, b) => state.enrolled[b.id].enrolledAt - state.enrolled[a.id].enrolledAt)[0] || null;
+  }
+
+  function continueCard(c) {
+    const e = state.enrolled[c.id];
+    const n = nextLessonOf(c, e);
+    const pct = pctOf(c, e);
+    return `<section class="continue-card" aria-label="Continue where you left off">
+      <div class="cc-text">
+        <p class="eyebrow">Continue where you left off</p>
+        <h2 class="h3"><a href="#/learn/${c.id}">${esc(c.title)}</a></h2>
+        <div class="progress" role="progressbar" aria-label="${esc(c.title)} progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>
+        <p class="hint">${pct}% · ${e.done.length} of ${plural(c.modules.length, 'lesson')} done</p>
+      </div>
+      <div class="cc-next">
+        <p class="mini-h">Next lesson</p>
+        <p class="cc-lesson">${n + 1}. ${esc(c.modules[n])} <span class="hint">${fmtTime(lessonSecs(c, n))}</span></p>
+        <button class="btn" type="button" data-action="play-lesson" data-id="${c.id}" data-i="${n}"><span class="btn-ic">${PLAY_SVG}</span>Play next lesson</button>
+      </div>
     </section>`;
+  }
+
+  function courseCard(c) {
+    const e = state.enrolled[c.id];
+    const pct = pctOf(c, e);
+    const n = nextLessonOf(c, e);
+    const status = e.completedAt ? 'Completed' : e.done.length ? 'In progress' : 'Not started';
+    return `<li class="pc-card ${e.completedAt ? 'complete' : ''}">
+      <div class="pc-top"><span class="tag">${esc(c.category)}</span><span class="pc-status">${status}</span></div>
+      <h3 class="pc-title"><a href="#/learn/${c.id}">${esc(c.title)}</a></h3>
+      <p class="course-sub">${esc(c.instructor)} · enrolled ${fmtDate(e.enrolledAt)}</p>
+      <div class="progress" role="progressbar" aria-label="${esc(c.title)} progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>
+      <p class="pc-meta"><strong>${pct}%</strong><span class="hint">${e.done.length} of ${plural(c.modules.length, 'lesson')}</span></p>
+      <p class="pc-next hint">${e.completedAt ? `Finished ${fmtDate(e.completedAt)}` : `Next: ${esc(c.modules[n])}`}</p>
+      <div class="actions">
+        <a class="btn btn-sm" href="#/learn/${c.id}">${e.completedAt ? 'Open course' : 'Continue'}</a>
+        ${e.completedAt ? `<a class="btn btn-outline btn-sm" href="#/certificate/${c.id}">Certificate</a>` : ''}
+      </div>
+    </li>`;
+  }
+
+  function sortedMyCourses() {
+    const { filter, sort } = state.profile;
+    const list = myCourses().filter(c => {
+      const e = state.enrolled[c.id];
+      if (filter === 'progress') return !e.completedAt && e.done.length > 0;
+      if (filter === 'done') return !!e.completedAt;
+      if (filter === 'new') return e.done.length === 0;
+      return true;
+    });
+    const by = {
+      recent: (a, b) => state.enrolled[b.id].enrolledAt - state.enrolled[a.id].enrolledAt,
+      most: (a, b) => pctOf(b, state.enrolled[b.id]) - pctOf(a, state.enrolled[a.id]),
+      least: (a, b) => pctOf(a, state.enrolled[a.id]) - pctOf(b, state.enrolled[b.id]),
+      title: (a, b) => a.title.localeCompare(b.title)
+    }[sort];
+    return list.sort(by);
+  }
+
+  function milestones() {
+    const items = [];
+    myCourses().forEach(c => {
+      const e = state.enrolled[c.id];
+      items.push({ at: e.enrolledAt, text: `Enrolled in <strong>${esc(c.title)}</strong>` });
+      if (e.completedAt) items.push({ at: e.completedAt, text: `Completed <strong>${esc(c.title)}</strong> and earned a certificate`, big: true });
+    });
+    Object.values(state.myReviews).forEach(r => {
+      const c = byId(r.course_id);
+      if (c) items.push({ at: Date.parse(r.updated_at), text: `Rated <strong>${esc(c.title)}</strong> ${r.rating}/5` });
+    });
+    return items.sort((a, b) => b.at - a.at).slice(0, 8);
+  }
+
+  function profileCourses() {
+    const all = myCourses();
+    if (!all.length) {
+      return `<div class="empty-state slim"><h2 class="h3">No courses yet</h2>
+        <p class="hint">Enrol in a course and your progress, next lesson and certificates will appear here.</p>
+        <a class="btn" href="#/courses">Find a course</a></div>`;
+    }
+    const f = state.profile;
+    const ms = milestones();
+    return `<div class="profile-grid">
+      <div>
+        <div class="toolbar slim">
+          <div class="chips" role="group" aria-label="Show courses">
+            ${[['all', 'All'], ['progress', 'In progress'], ['done', 'Completed'], ['new', 'Not started']].map(([k, l]) => `<button class="chip" type="button" data-action="pf-filter" data-k="${k}" aria-pressed="${f.filter === k}">${l}</button>`).join('')}
+          </div>
+          <label class="sr-only" for="pfSort">Sort courses</label>
+          <select class="select select-sm" id="pfSort">
+            ${[['recent', 'Recently enrolled'], ['most', 'Most progress'], ['least', 'Least progress'], ['title', 'Title A–Z']].map(([k, l]) => `<option value="${k}" ${f.sort === k ? 'selected' : ''}>${l}</option>`).join('')}
+          </select>
+        </div>
+        <ul class="pc-grid" id="pcGrid">${sortedMyCourses().map(courseCard).join('') || '<li class="hint">No courses match this filter.</li>'}</ul>
+      </div>
+      <aside class="milestones" aria-label="Milestone history">
+        <h2 class="mini-h">Milestones</h2>
+        <ol>${ms.map(m => `<li class="${m.big ? 'ms-big' : ''}"><span class="ms-date">${fmtDate(m.at)}</span><span>${m.text}</span></li>`).join('')}</ol>
+      </aside>
+    </div>`;
+  }
+
+  function profileCertificates() {
+    const done = myCourses().filter(c => state.enrolled[c.id].completedAt)
+      .sort((a, b) => state.enrolled[b.id].completedAt - state.enrolled[a.id].completedAt);
+    if (!done.length) {
+      const near = lastActive();
+      return `<div class="empty-state slim"><h2 class="h3">No certificates yet</h2>
+        <p class="hint">Finish every lesson in a course and its certificate is saved here permanently.</p>
+        ${near ? `<a class="btn" href="#/learn/${near.id}">Continue ${esc(near.title)}</a>` : '<a class="btn" href="#/courses">Find a course</a>'}</div>`;
+    }
+    return `<ul class="cert-list">${done.map(c => {
+      const e = state.enrolled[c.id];
+      return `<li><span class="cert-mini" aria-hidden="true">★</span>
+        <div><h3 class="pc-title">${esc(c.title)}</h3><p class="hint">Completed ${fmtDate(e.completedAt)} · ID ${certId(c, e)}</p></div>
+        <div class="actions"><a class="btn btn-sm" href="#/certificate/${c.id}">View</a>
+        <a class="btn btn-outline btn-sm" href="#/certificate/${c.id}" data-print="1">Download</a></div></li>`;
+    }).join('')}</ul>`;
+  }
+
+  function profileReviews() {
+    const list = Object.values(state.myReviews).filter(r => byId(r.course_id));
+    if (!list.length) {
+      return `<div class="empty-state slim"><h2 class="h3">No reviews yet</h2>
+        <p class="hint">Rate a course from its page or from the bottom of the course’s lesson list.</p></div>`;
+    }
+    return `<ul class="rv-list mine">${list.map(r => `<li>
+      <div class="rv-head"><strong><a href="#/course/${r.course_id}">${esc(byId(r.course_id).title)}</a></strong>${stars(r.rating)}<span class="hint">${fmtDate(Date.parse(r.updated_at))}</span></div>
+      ${r.comment ? `<p>${esc(r.comment)}</p>` : '<p class="hint">No comment</p>'}
+      <a class="small-link" href="#/learn/${r.course_id}" data-jump="rate">Edit review</a></li>`).join('')}</ul>`;
+  }
+
+  function profileAccount() {
+    return `<div class="account-grid">
+      <form id="accountForm" class="account-card" novalidate>
+        <h2 class="h3">Your details</h2>
+        ${field({ id: 'acName', label: 'Full name', ac: 'name', rule: 'name', value: state.user.name })}
+        <div class="field"><label for="acEmail">Email</label><input class="input" id="acEmail" value="${esc(state.user.email)}" readonly aria-describedby="acEmailHint"><p class="hint" id="acEmailHint">Your email is your login and can’t be changed in this prototype.</p></div>
+        <button class="btn btn-sm" type="submit">Save changes</button>
+      </form>
+      <div class="account-card">
+        <h2 class="h3">Log out</h2>
+        <p>Logging out clears your data from this device: your login, saved video positions and this session’s activity.</p>
+        <p class="hint">Your courses, progress, certificates and reviews stay safe in your account for next time.</p>
+        <button class="btn btn-outline btn-sm" type="button" data-action="logout">Log out of UpClick</button>
+      </div>
+    </div>`;
+  }
+
+  function viewProfile(tab = 'courses') {
+    if (!state.user) return viewLoginNeeded('Log in to see your Profile');
+    const tabs = [['courses', 'My courses'], ['certificates', 'Certificates'], ['reviews', 'My reviews'], ['account', 'Account']];
+    if (!tabs.some(([k]) => k === tab)) tab = 'courses';
+    const all = myCourses();
+    const lessons = all.reduce((n, c) => n + state.enrolled[c.id].done.length, 0);
+    const certs = all.filter(c => state.enrolled[c.id].completedAt).length;
+    const current = lastActive();
+    const body = { courses: profileCourses, certificates: profileCertificates, reviews: profileReviews, account: profileAccount }[tab]();
+    return `<section class="container">
+      <header class="profile-head">
+        <span class="avatar avatar-lg" aria-hidden="true">${esc(initials(state.user.name))}</span>
+        <div><p class="eyebrow">Profile</p><h1 class="h2">${esc(state.user.name)}</h1><p class="hint">${esc(state.user.email)}</p></div>
+        <ul class="profile-stats">
+          <li><strong>${all.length}</strong><span>${all.length === 1 ? 'course' : 'courses'}</span></li>
+          <li><strong>${lessons}</strong><span>${lessons === 1 ? 'lesson done' : 'lessons done'}</span></li>
+          <li><strong>${certs}</strong><span>${certs === 1 ? 'certificate' : 'certificates'}</span></li>
+        </ul>
+      </header>
+      ${tab === 'courses' && current ? continueCard(current) : ''}
+      <div class="ptabs" role="tablist" aria-label="Profile sections">
+        ${tabs.map(([k, l]) => `<a class="ptab" role="tab" href="#/profile/${k}" aria-selected="${k === tab}">${l}${k === 'certificates' && certs ? ` <span class="count">${certs}</span>` : ''}</a>`).join('')}
+      </div>
+      <div class="ptab-panel" role="tabpanel">${body}</div>
+    </section>`;
+  }
+
+  function viewLearn(id) {
+    const c = byId(id);
+    if (!c) return viewNotFound();
+    if (!state.user) return viewLoginNeeded('Log in to continue this course');
+    const e = state.enrolled[id];
+    if (!e) { setTimeout(() => { location.replace(`#/course/${id}`); }, 0); return ''; }
+    const n = nextLessonOf(c, e);
+    return `<section class="container">
+      <nav class="breadcrumb" aria-label="Breadcrumb"><a href="#/profile">← Profile</a> <span class="hint">/ My courses</span></nav>
+      ${learnItem(c)}
+      ${n > -1 ? '' : `<div class="finish-note done-note"><span>You finished every lesson. Your certificate is saved under Profile → Certificates.</span><a class="btn btn-sm" href="#/certificate/${c.id}">View certificate</a></div>`}
+      <section class="rate-box" id="rate">
+        <h2 class="h3">Rate this course</h2>
+        <p class="hint">Something unclear or great in this course? Tell us here — it goes straight to the course team and helps other learners.</p>
+        ${reviewForm(c, state.myReviews[c.id])}
+        <p class="hint">Problem with your account or the site? <a href="#/help">Visit Help</a>.</p>
+      </section>
+    </section>`;
+  }
+
+  function faqItems() {
+    return [
+      ['How do I enrol in a course?', 'Open any course and press <strong>Enrol now</strong>. If you are not logged in, you will be asked to create a free account first, then you come straight back to finish enrolling. After enrolling you land on the course’s first lesson.'],
+      ['Is there a discount if I take more than one course?', 'Yes. Your first course is full price, and every course after that is <strong>10% off</strong>. The discount is shown on the course page before you enrol.'],
+      ['Where can I see my progress?', 'Go to <strong>Profile</strong> in the menu. “My courses” shows every course you are enrolled in with its progress, and the top card takes you straight to your next lesson.'],
+      ['How do the video lessons work?', 'Press play on any lesson. When the video ends, the lesson is ticked off automatically and the next lesson starts after a short countdown. You can also tick a lesson yourself, change the speed or turn captions off.'],
+      ['Where are my certificates?', 'Every certificate you earn is kept in <strong>Profile → Certificates</strong>, where you can view or download it at any time.'],
+      ['How do I rate a course?', 'Open the course from your Profile and scroll to <strong>Rate this course</strong>, or use the Reviews section on the course page. You can update your rating later.'],
+      ['What happens when I log out?', 'Logging out clears your data from this device. Your courses, progress, certificates and reviews stay saved in your account.'],
+      ['Is this a real shop?', 'UpClick is a university prototype. No payment details are collected and no money is taken.']
+    ];
+  }
+
+  function viewHelp() {
+    const u = state.user;
+    return `<section class="container">
+      <p class="eyebrow">Help</p>
+      <h1 class="h1">How can we <span class="shadow-text">help?</span></h1>
+      <div class="help-grid">
+        <section aria-labelledby="faqH">
+          <h2 class="h3" id="faqH">Frequently asked questions</h2>
+          <div class="faq">${faqItems().map(([q, a], i) => `<details ${i === 0 ? 'open' : ''}><summary>${q}</summary><p>${a}</p></details>`).join('')}</div>
+        </section>
+        <section class="contact-card" aria-labelledby="contactH" id="contact">
+          <h2 class="h3" id="contactH">Contact us</h2>
+          <p class="hint">We reply within 2 working days.</p>
+          <form id="contactForm" novalidate>
+            ${field({ id: 'ctName', label: 'Your name', ac: 'name', rule: 'name', value: u ? u.name : '' })}
+            ${field({ id: 'ctEmail', label: 'Email', type: 'email', ac: 'email', rule: 'email', value: u ? u.email : '' })}
+            <div class="field"><label for="ctTopic">Topic</label>
+              <select class="input" id="ctTopic">${['Courses and enrolment', 'My account', 'Certificates', 'Technical problem', 'Something else'].map(t => `<option>${t}</option>`).join('')}</select></div>
+            <div class="field"><label for="ctMsg">Message</label>
+              <textarea class="input" id="ctMsg" rows="4" maxlength="2000" data-rule="message" aria-describedby="ctMsg-err"></textarea>
+              <p class="error" id="ctMsg-err"></p></div>
+            <button class="btn btn-block" type="submit">Send message</button>
+          </form>
+        </section>
+      </div>
+    </section>`;
+  }
+
+  function certId(c, e) {
+    return 'UC-' + (e.completedAt % 1e8).toString(36).toUpperCase() + '-' + c.id.slice(0, 3).toUpperCase();
   }
 
   function viewCertificate(id) {
@@ -526,19 +829,19 @@
       return `<section class="container empty-state">
         <h1 class="h2">Certificate locked</h1>
         <p class="lead" style="margin-inline:auto">Finish every lesson in this course to unlock your certificate.</p>
-        <div class="actions"><a class="btn" href="#/learning">Go to My Learning</a></div>
+        <div class="actions"><a class="btn" href="#/profile">Go to my Profile</a></div>
       </section>`;
     }
     const name = state.user?.name || 'UpClick Learner';
     const date = new Date(e.completedAt).toLocaleDateString('en-ZA', { day: 'numeric', month: 'long', year: 'numeric' });
-    const certId = 'UC-' + (e.completedAt % 1e8).toString(36).toUpperCase() + '-' + c.id.slice(0, 3).toUpperCase();
     const next = COURSES.filter(x => !state.enrolled[x.id] && x.id !== id)
       .sort((a, b) => (b.category === c.category) - (a.category === c.category) || LEVELS[a.level] - LEVELS[b.level] || b.rating - a.rating)
       .slice(0, 3);
     return `<section class="container">
+      <nav class="breadcrumb" aria-label="Breadcrumb"><a href="#/profile/certificates">← All my certificates</a></nav>
       <div class="certificate" id="certificate">
         <span class="logo logo-sm">UPClick</span>
-        <p class="eyebrow" style="margin-top:18px">Certificate of completion</p>
+        <p class="eyebrow" style="margin-top:14px">Certificate of completion</p>
         <p>This certifies that</p>
         <h1 class="cert-name">${esc(name)}</h1>
         <p>has successfully completed</p>
@@ -546,15 +849,17 @@
         <p class="hint">${c.hours} hours · ${plural(c.modules.length, 'lesson')} · ${date}</p>
         <div class="seal" aria-hidden="true">★</div>
         <div class="cert-sign"><span>${esc(c.instructor)}</span><small>Instructor</small></div>
-        <p class="cert-id">Certificate ID: ${certId}</p>
+        <p class="cert-id">Certificate ID: ${certId(c, e)}</p>
       </div>
       <div class="cert-actions">
         <button class="btn" type="button" data-action="print">Download / print</button>
         <button class="btn btn-outline" type="button" data-action="share" data-id="${c.id}">Copy share message</button>
       </div>
+      <p class="hint center-text">This certificate is saved permanently in Profile → Certificates.</p>
     </section>
     ${next.length ? `<section class="container">
       <h2 class="h2">Keep the momentum going</h2>
+      <p class="hint">Returning learners get 10% off every new course.</p>
       <div class="list">${listHead(false)}<ul class="course-list">${next.map(x => courseRow(x)).join('')}</ul></div>
     </section>` : ''}`;
   }
@@ -599,8 +904,10 @@
         <button class="btn" type="button" data-action="course-new">+ Add course</button>
       </div>
       <div class="list"><ul class="course-list">${list.map(adminRow).join('')}</ul></div>
-      <h2 class="h2" style="margin-top:48px">Latest feedback</h2>
-      <div id="adminFeedback"><p class="hint">Loading feedback…</p></div>
+      <div class="admin-cols">
+        <section><h2 class="h2">Latest course reviews</h2><div id="adminReviews"><p class="hint">Loading reviews…</p></div></section>
+        <section><h2 class="h2">Contact messages</h2><div id="adminMessages"><p class="hint">Loading messages…</p></div></section>
+      </div>
     </section>`;
   }
 
@@ -611,15 +918,20 @@
       const s = await api('/admin/summary');
       const tiles = [
         [s.learners, 'learners'], [s.enrolments, 'enrolments'], [s.completions, 'courses completed'],
-        [money(s.revenue), 'revenue (demo)'], [s.average_rating ?? '–', `avg rating (${s.feedback_count})`]
+        [money(s.revenue), 'revenue (demo)'], [s.average_rating ?? '–', `avg review (${s.review_count})`]
       ];
+      const when = d => new Date(d).toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' });
       stats.innerHTML = tiles.map(([v, l]) => `<div class="stat"><strong>${v}</strong><span>${l}</span></div>`).join('');
-      $('#adminFeedback').innerHTML = s.recent_feedback.length
-        ? `<ul class="feedback-list">${s.recent_feedback.map(f => `<li>
-            <div class="fb-head"><strong>${esc(f.name)}</strong><span class="fb-stars" aria-label="${f.rating} out of 5">${'★'.repeat(f.rating)}${'☆'.repeat(5 - f.rating)}</span>
-            <span class="hint">${new Date(f.created_at).toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })}</span></div>
-            ${f.message ? `<p>${esc(f.message)}</p>` : ''}</li>`).join('')}</ul>`
-        : '<p class="hint">No feedback yet. It appears here when someone uses “Tell us how we’re doing” on the About page.</p>';
+      $('#adminReviews').innerHTML = s.recent_reviews.length
+        ? `<ul class="feedback-list">${s.recent_reviews.map(r => `<li>
+            <div class="fb-head"><strong>${esc(r.name)}</strong>${stars(r.rating)}<span class="hint">${esc(r.course)} · ${when(r.updated_at)}</span></div>
+            ${r.comment ? `<p>${esc(r.comment)}</p>` : ''}</li>`).join('')}</ul>`
+        : '<p class="hint">No reviews yet. Learners rate courses from the course page or their lesson list.</p>';
+      $('#adminMessages').innerHTML = s.recent_messages.length
+        ? `<ul class="feedback-list">${s.recent_messages.map(m => `<li>
+            <div class="fb-head"><strong>${esc(m.name)}</strong><span class="tag">${esc(m.topic)}</span><span class="hint">${esc(m.email)} · ${when(m.created_at)}</span></div>
+            <p>${esc(m.message)}</p></li>`).join('')}</ul>`
+        : '<p class="hint">No messages yet. They arrive from the contact form on the Help page.</p>';
     } catch (err) {
       stats.innerHTML = `<p class="error">${esc(err.message)}</p>`;
     }
@@ -687,7 +999,6 @@
     try {
       await api(`/courses/${encodeURIComponent(id)}`, { method: 'DELETE' });
       COURSES = await api('/courses');
-      state.cart = state.cart.filter(byId); save();
       render();
       toast('Course deleted.');
     } catch (err) {
@@ -698,10 +1009,11 @@
   }
 
   const routes = {
-    '': viewHome, courses: viewCourses, course: viewCourse, about: viewAbout, cart: viewCart,
+    '': viewHome, courses: viewCourses, course: viewCourse, about: viewAbout, help: viewHelp,
     signup: () => viewAuth('signup'), login: () => viewAuth('login'),
-    learning: viewLearning, certificate: viewCertificate, admin: viewAdmin
+    profile: viewProfile, learn: viewLearn, certificate: viewCertificate, admin: viewAdmin
   };
+  const REDIRECTS = { learning: '#/profile', cart: '#/courses' };
   let typingTimer = null;
 
   function render() {
@@ -709,6 +1021,7 @@
     closeModal(false);
     closeNav();
     const [page = '', param] = location.hash.replace(/^#\/?/, '').split('/');
+    if (REDIRECTS[page]) { location.replace(REDIRECTS[page]); return; }
     const view = routes[page] || viewNotFound;
     const app = $('#app');
     app.innerHTML = `<div class="view">${view(param ? decodeURIComponent(param) : undefined)}</div>`;
@@ -725,32 +1038,33 @@
     if (page === 'courses') renderCourseList();
     if (page === 'certificate' && $('#certificate')) setTimeout(() => celebrate('medium'), 450);
     if (page === 'admin') loadAdminSummary();
+    if (page === 'course' && $('#reviews')) loadReviews($('#reviews').dataset.id);
+    if (page === 'courses' && $('#q') && state.catalog.q) $('#q').focus();
+    if (page === 'certificate' && session.get('print', false)) { session.del('print'); setTimeout(() => window.print(), 700); }
+    if (page === 'learn' && session.get('jump', '') === 'rate') {
+      session.del('jump');
+      setTimeout(() => $('#rate')?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth' }), 60);
+    }
     observeReveals();
   }
 
   function updateNav() {
     const page = currentPage();
     $('#authSlot').innerHTML = state.user
-      ? `${state.user.is_admin ? '<a href="#/admin" data-route="admin">Admin</a>' : ''}<span class="user-chip"><span class="avatar" aria-hidden="true" title="${esc(state.user.name)}">${esc(state.user.name.trim()[0] || '?').toUpperCase()}</span><button class="link-btn" type="button" data-action="logout">Log out</button></span>`
-      : '<a href="#/signup" data-route="signup">SignUp</a>';
+      ? `${state.user.is_admin ? '<a href="#/admin" data-route="admin">Admin</a>' : ''}
+         <a href="#/profile" data-route="profile" class="profile-link"><span class="avatar" aria-hidden="true">${esc(initials(state.user.name))}</span>Profile</a>
+         <button class="link-btn" type="button" data-action="logout">Log out</button>`
+      : '<a href="#/login" data-route="login">Log in</a><a href="#/signup" data-route="signup" class="btn btn-sm nav-cta">Sign up</a>';
+    const group = { course: 'courses', learn: 'profile', certificate: 'profile' }[page] || page;
     $$('.nav [data-route]').forEach(a => {
-      const on = a.dataset.route === page || (a.dataset.route === 'signup' && page === 'login') || (a.dataset.route === 'courses' && page === 'course') || (a.dataset.route === 'learning' && page === 'certificate');
+      const on = a.dataset.route === group;
       a.classList.toggle('active', on);
       if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
-    updateBadge();
+    const nq = $('#navQ');
+    if (nq && document.activeElement !== nq) nq.value = page === 'courses' ? state.catalog.q : '';
   }
 
-  function updateBadge() {
-    const b = $('#cartBadge');
-    b.textContent = state.cart.length;
-    b.hidden = state.cart.length === 0;
-  }
-  function bumpBadge() {
-    updateBadge();
-    const b = $('#cartBadge');
-    b.classList.remove('bump'); void b.offsetWidth; b.classList.add('bump');
-  }
   function closeNav() {
     $('#nav').classList.remove('open');
     $('.nav-toggle').setAttribute('aria-expanded', 'false');
@@ -769,7 +1083,7 @@
   function highlight(text) {
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/("[^"\n]*"?)/g, '<span class="tok-s">$1</span>')
-      .replace(/\b(const|function|return)\b/g, '<span class="tok-k">$1</span>')
+      .replace(/\b(const|function|return|def|final|void)\b/g, '<span class="tok-k">$1</span>')
       .replace(/\b(levelUp|log)\b(?=\()/g, '<span class="tok-f">$1</span>');
   }
 
@@ -906,9 +1220,11 @@
   }
 
   let lastFocus = null;
-  function openModal(html, label) {
-    lastFocus = document.activeElement;
+  function openModal(html, label, { wide = false } = {}) {
+    stopPlayer();
+    if ($('#modal').hidden) lastFocus = document.activeElement;
     const card = $('#modalCard');
+    card.classList.toggle('modal-wide', wide);
     card.innerHTML = `<button class="modal-x" type="button" data-action="close-modal" aria-label="Close">✕</button>${html}`;
     card.setAttribute('aria-label', label);
     $('#modal').hidden = false;
@@ -919,6 +1235,7 @@
   function closeModal(restoreFocus = true) {
     const m = $('#modal');
     if (m.hidden) return;
+    stopPlayer();
     m.hidden = true;
     document.body.classList.remove('no-scroll');
     if (restoreFocus && lastFocus && document.contains(lastFocus)) lastFocus.focus();
@@ -936,76 +1253,143 @@
     setTimeout(() => s.remove(), 650);
   });
 
-  function flyToCart(from, done) {
-    let target = $('.cart-link');
-    if (!target || target.offsetParent === null) target = $('.nav-toggle');
-    if (reduceMotion || !target) return done();
-    const a = from.getBoundingClientRect(), b = target.getBoundingClientRect();
-    const ax = a.left + a.width / 2, ay = a.top + a.height / 2;
-    const dot = document.createElement('div');
-    dot.className = 'fly-dot';
-    dot.style.left = (ax - 10) + 'px';
-    dot.style.top = (ay - 10) + 'px';
-    document.body.appendChild(dot);
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      dot.style.transform = `translate(${b.left + b.width / 2 - ax}px, ${b.top + b.height / 2 - ay}px) scale(.5)`;
-      dot.style.opacity = '.4';
-    }));
-    setTimeout(() => { dot.remove(); done(); }, 720);
-  }
-
-  function addToCart(id, btn) {
+  function startEnrol(id) {
     const c = byId(id);
-    if (!c || state.cart.includes(id) || state.enrolled[id]) return;
-    state.cart.push(id);
-    save();
-    flyToCart(btn, bumpBadge);
-    $$(`[data-action="add"][data-id="${id}"]`).forEach(b => {
-      const link = document.createElement('a');
-      link.className = b.className.replace(/\bpop\b/, '') + ' added pop';
-      link.href = '#/cart';
-      link.textContent = '✓ In cart';
-      b.replaceWith(link);
-    });
-    $$(`[data-action="buy-now"][data-id="${id}"]`).forEach(b => b.remove());
-    toast(`<strong>${esc(c.title)}</strong> added to your cart`, { action: { label: 'View cart', href: '#/cart' } });
-    if (state.cart.length === 2) setTimeout(() => toast('Bundle unlocked — <strong>10% off</strong> your order!'), 500);
-  }
-
-  function removeFromCart(id, btn) {
-    const li = btn.closest('.cart-item');
-    const finish = () => {
-      state.cart = state.cart.filter(x => x !== id);
-      save(); updateBadge();
-      $('#app').innerHTML = `<div class="view">${viewCart()}</div>`;
-    };
-    if (li && !reduceMotion) { li.classList.add('removing'); setTimeout(finish, 330); } else finish();
-  }
-
-  function openCheckout() {
-    const items = state.cart.map(byId).filter(Boolean);
-    if (!items.length) return;
+    if (!c) return;
+    if (state.enrolled[id]) { location.hash = `#/learn/${id}`; return; }
     if (!state.user) {
+      session.set('intent', { enrol: id });
       openModal(`<div class="success"><p class="eyebrow">One quick step</p>
         <h2 class="h2">Create a free account to enrol</h2>
-        <p class="lead">Your courses, progress and certificates are saved to your account. Your cart will be waiting right here.</p>
+        <p class="lead">Your courses, progress and certificates are saved to your account. You’ll come straight back to finish enrolling in <strong>${esc(c.title)}</strong>.</p>
         <a class="btn btn-block" href="#/signup">Sign up — it’s free</a>
         <a class="btn btn-ghost btn-block" href="#/login">I already have an account</a></div>`, 'Account needed');
       return;
     }
-    const { discount, total } = totals(items);
-    openModal(`
-      <p class="eyebrow">Checkout</p>
-      <h2 class="h3">Almost there, ${first(state.user.name)}!</h2>
-      <ul class="mini-list">${items.map(c => `<li><span>${esc(c.title)}</span><span>${money(c.price)}</span></li>`).join('')}</ul>
-      ${discount ? `<div class="sum-row accent"><span>Bundle discount</span><span>−${money(discount)}</span></div>` : ''}
-      <div class="sum-row total"><span>Total</span><span>${money(total)}</span></div>
-      <p class="hint" style="margin-top:16px">Enrolling as <strong>${esc(state.user.email)}</strong>. Prototype checkout — no payment details are collected.</p>
-      <button class="btn btn-block" type="button" data-action="confirm-checkout">Pay ${money(total)} &amp; enrol</button>`, 'Checkout');
+    openEnrolConfirm(id);
+  }
+
+  function openEnrolConfirm(id) {
+    const c = byId(id);
+    const q = quote(c);
+    openModal(`<p class="eyebrow">Enrol</p>
+      <h2 class="h3">${esc(c.title)}</h2>
+      <p class="hint">${plural(c.modules.length, 'video lesson')} · ${c.hours} hours · certificate on completion</p>
+      <div class="sum-row"><span>Course price</span><span>${money(q.price)}</span></div>
+      ${q.discount ? `<div class="sum-row accent"><span>Returning learner (10% off)</span><span>−${money(q.discount)}</span></div>` : ''}
+      <div class="sum-row total"><span>Total</span><span>${money(q.total)}</span></div>
+      <p class="hint" style="margin-top:12px">Enrolling as <strong>${esc(state.user.email)}</strong>. Prototype — no payment details are collected.</p>
+      <button class="btn btn-block" type="button" data-action="confirm-enrol" data-id="${c.id}">Enrol in this course · ${money(q.total)}</button>
+      <button class="btn btn-ghost btn-block" type="button" data-action="close-modal">Not now</button>`, 'Enrol');
+  }
+
+  async function submitEnrol(btn, id) {
+    setLoading(btn, true, 'Enrolling…');
+    const started = Date.now();
+    let res;
+    try {
+      res = await api('/enrol', { method: 'POST', body: { course_id: id } });
+    } catch (err) {
+      setLoading(btn, false);
+      if (err.status === 401) closeModal();
+      if (err.status === 409) { await loadEnrolments().catch(() => {}); closeModal(false); location.hash = `#/learn/${id}`; return; }
+      toast(esc(err.message), { timeout: 5000 });
+      return;
+    }
+    await new Promise(r => setTimeout(r, Math.max(0, 900 - (Date.now() - started))));
+    state.enrolled[id] = fromApi(res.enrolment);
+    const c = byId(id);
+    c.students += 1;
+    state.session.enrolled += 1;
+    save();
+    session.del('intent');
+    closeModal(false);
+    if (location.hash === `#/learn/${id}`) render(); else location.hash = `#/learn/${id}`;
+    setTimeout(() => {
+      openModal(`<div class="success">${CHECK_SVG}
+        <p class="eyebrow">Enrolled · ${money(res.total)}${res.discount ? ` (saved ${money(res.discount)})` : ''}</p>
+        <h2 class="h2">You’re in, ${first(state.user.name)}!</h2>
+        <p class="lead">This is your course page for <strong>${esc(c.title)}</strong>. Your progress is saved automatically and always visible in your Profile.</p>
+        <button class="btn btn-block" type="button" data-action="play-lesson" data-id="${id}" data-i="0"><span class="btn-ic">${PLAY_SVG}</span>Start lesson 1</button>
+        <button class="btn btn-ghost btn-block" type="button" data-action="close-modal">Look around first</button>
+      </div>`, 'Enrolled');
+      celebrate(res.first_enrolment ? 'big' : 'medium');
+    }, 60);
+  }
+
+  async function loadReviews(id) {
+    const box = $('#reviews');
+    if (!box) return;
+    try {
+      const data = await api(`/courses/${encodeURIComponent(id)}/reviews`);
+      if ($('#reviews')?.dataset.id === id) $('#reviews').innerHTML = reviewsHTML(byId(id), data);
+    } catch (err) {
+      box.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+    }
+  }
+
+  async function submitReview(f) {
+    const id = f.dataset.id;
+    const picked = f.querySelector('input[name=rating]:checked');
+    const err = $('#rvErr', f);
+    if (!picked) { err.textContent = 'Choose a star rating first.'; f.querySelector('.star-pick input')?.focus(); return; }
+    err.textContent = '';
+    const btn = f.querySelector('[type=submit]');
+    setLoading(btn, true, 'Saving…');
+    try {
+      const r = await api(`/courses/${encodeURIComponent(id)}/reviews`, { method: 'PUT', body: { rating: +picked.value, comment: $('#rvText', f).value } });
+      state.myReviews[id] = r;
+      const legend = f.querySelector('legend');
+      if (legend) legend.textContent = 'Update your rating';
+      setLoading(btn, false);
+      btn.textContent = 'Update review';
+      toast(r.first ? 'Thanks — your review is live on the course page.' : 'Your review has been updated.', { action: { label: 'See it', href: `#/course/${id}` } });
+      if (r.first) celebrate('small', btn);
+      if ($('#reviews')) loadReviews(id);
+    } catch (e2) {
+      setLoading(btn, false);
+      err.textContent = e2.message;
+    }
+  }
+
+  async function submitContact(f) {
+    const msg = $('#ctMsg', f);
+    if (!validateForm(f)) return;
+    const btn = f.querySelector('[type=submit]');
+    setLoading(btn, true, 'Sending…');
+    try {
+      await api('/contact', { method: 'POST', body: { name: $('#ctName', f).value, email: $('#ctEmail', f).value, topic: $('#ctTopic', f).value, message: msg.value } });
+      const name = first($('#ctName', f).value), email = esc($('#ctEmail', f).value.trim());
+      f.outerHTML = `<div class="success contact-done" tabindex="-1">${CHECK_SVG}<h3 class="h3">Message sent — thanks, ${name}!</h3>
+        <p class="hint">We’ll reply to ${email} within 2 working days.</p>
+        <a class="btn btn-outline btn-sm" href="#/courses">Back to courses</a></div>`;
+      $('.contact-done').focus();
+    } catch (e2) {
+      setLoading(btn, false);
+      toast(esc(e2.message), { timeout: 5000 });
+    }
+  }
+
+  async function submitAccount(f) {
+    if (!validateForm(f)) return;
+    const btn = f.querySelector('[type=submit]');
+    setLoading(btn, true, 'Saving…');
+    try {
+      state.user = await api('/auth/me', { method: 'PATCH', body: { name: $('#acName', f).value } });
+      setLoading(btn, false);
+      updateNav();
+      $('.profile-head h1').textContent = state.user.name;
+      $('.profile-head .avatar').textContent = initials(state.user.name);
+      toast('Your details are saved.');
+    } catch (e2) {
+      setLoading(btn, false);
+      showFieldError($('#acName', f), e2.message);
+    }
   }
 
   const validators = {
     name: v => v.trim().length >= 2 || 'Please enter your name.',
+    message: v => v.trim().length >= 10 || 'Tell us a little more (at least 10 characters).',
     email: v => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v.trim()) || 'Enter a valid email, like you@example.com.',
     password: v => v.length >= 8 || 'Use at least 8 characters.',
     loginPassword: v => v.length > 0 || 'Enter your password.'
@@ -1022,7 +1406,7 @@
     return ok;
   }
   function validateForm(form) {
-    const inputs = $$('input[data-rule]', form);
+    const inputs = $$('[data-rule]', form);
     const results = inputs.map(check);
     const bad = inputs[results.indexOf(false)];
     if (bad) { bad.focus(); return false; }
@@ -1053,24 +1437,34 @@
   document.addEventListener('input', e => {
     const t = e.target;
     if (t.id === 'q') { state.catalog.q = t.value; renderCourseList(); return; }
-    if (t.matches('input[data-rule]') && t.closest('.field').classList.contains('invalid')) check(t);
+    if (t.matches('[data-rule]') && t.closest('.field')?.classList.contains('invalid')) check(t);
     if (t.id === 'password') updateStrength(t.value);
   });
   document.addEventListener('focusout', e => {
     const t = e.target;
-    if (t.matches && t.matches('input[data-rule]') && t.value) check(t);
+    if (t.matches && t.matches('[data-rule]') && t.value) check(t);
   });
   document.addEventListener('change', e => {
     const t = e.target;
     if (t.id === 'level') { state.catalog.level = t.value; renderCourseList(); }
     if (t.id === 'sort') { const [s, d] = t.value.split(':'); state.catalog.sort = s; state.catalog.dir = d; renderCourseList(); }
+    if (t.id === 'pfSort') { state.profile.sort = t.value; $('#pcGrid').innerHTML = sortedMyCourses().map(courseCard).join('') || '<li class="hint">No courses match this filter.</li>'; }
   });
 
   document.addEventListener('submit', e => {
     const f = e.target;
     if (f.id === 'authForm') { e.preventDefault(); submitAuth(f); }
-    if (f.id === 'feedbackForm') { e.preventDefault(); submitFeedback(f); }
     if (f.id === 'courseForm') { e.preventDefault(); submitCourse(f); }
+    if (f.id === 'reviewForm') { e.preventDefault(); submitReview(f); }
+    if (f.id === 'contactForm') { e.preventDefault(); submitContact(f); }
+    if (f.id === 'accountForm') { e.preventDefault(); submitAccount(f); }
+    if (f.id === 'navSearch') {
+      e.preventDefault();
+      state.catalog.q = $('#navQ').value.trim();
+      Object.assign(state.catalog, { category: 'All', level: 'All' });
+      $('#navQ').blur();
+      if (currentPage() === 'courses') { render(); } else location.hash = '#/courses';
+    }
   });
 
   function showFieldError(input, message) {
@@ -1093,8 +1487,6 @@
       const body = mode === 'signup' ? { name: $('#name', f).value.trim(), email, password } : { email, password };
       startSession(await api(mode === 'signup' ? '/auth/register' : '/auth/login', { method: 'POST', body }));
       await loadEnrolments();
-      state.cart = state.cart.filter(id => !state.enrolled[id]);
-      save();
     } catch (err) {
       setLoading(btn, false);
       if (err.status === 409) showFieldError($('#email', f), err.message);
@@ -1105,64 +1497,24 @@
     setLoading(btn, false);
     updateNav();
     const name = state.user.name;
+    const intent = session.get('intent', null);
+    const target = intent && byId(intent.enrol);
+    if (target && state.enrolled[target.id]) session.del('intent');
+    if (target && !state.enrolled[target.id]) {
+      location.hash = `#/course/${target.id}`;
+      setTimeout(() => {
+        openEnrolConfirm(target.id);
+        toast(`${mode === 'signup' ? 'Account created' : 'Logged in'} — now confirm your enrolment.`);
+      }, 50);
+      if (mode === 'signup') celebrate('medium');
+      return;
+    }
     const hasCourses = Object.keys(state.enrolled).length > 0;
-    const nextHref = state.cart.length ? '#/cart' : hasCourses ? '#/learning' : '#/courses';
-    const nextLabel = state.cart.length ? 'Back to my cart' : hasCourses ? 'Continue learning' : 'Pick my first course';
     openModal(`<div class="success">${CHECK_SVG}
       <h2 class="h2">${mode === 'signup' ? 'Welcome aboard' : 'Welcome back'}, ${first(name)}!</h2>
       <p class="lead">${mode === 'signup' ? 'Your account is ready. Your first line of code is one click away.' : 'Good to see you again — let’s pick up where you left off.'}</p>
-      <a class="btn btn-block" href="${nextHref}">${nextLabel}</a></div>`, 'Welcome');
-    celebrate('medium');
-  }
-
-  async function submitCheckout(btn) {
-    setLoading(btn, true, 'Processing…');
-    const started = Date.now();
-    let res;
-    try {
-      res = await api('/checkout', { method: 'POST', body: { course_ids: state.cart.filter(byId) } });
-    } catch (err) {
-      setLoading(btn, false);
-      if (err.status === 401) closeModal();
-      toast(esc(err.message), { timeout: 5000 });
-      return;
-    }
-    await new Promise(r => setTimeout(r, Math.max(0, 1100 - (Date.now() - started))));
-    res.enrolments.forEach(e => { state.enrolled[e.course_id] = fromApi(e); });
-    res.enrolled.forEach(id => { const c = byId(id); if (c) c.students += 1; });
-    const items = res.enrolled;
-    state.cart = [];
-    state.session.enrolled += items.length;
-    save();
-    updateNav();
-    if (currentPage() === 'cart' || currentPage() === 'course') $('#app').innerHTML = `<div class="view">${(currentPage() === 'cart' ? viewCart : () => viewCourse(location.hash.split('/')[2]))()}</div>`;
-    $('#modalCard').innerHTML = `<button class="modal-x" type="button" data-action="close-modal" aria-label="Close">✕</button>
-      <div class="success">${CHECK_SVG}
-        <p class="eyebrow">Order confirmed · ${money(res.total)}</p>
-        <h2 class="h2">You’re in, ${first(state.user.name)}!</h2>
-        <p>You’re now enrolled in <strong>${plural(items.length, 'course')}</strong>:</p>
-        <ul class="enrolled-list">${items.map(id => `<li>✓ ${esc(byId(id)?.title || id)}</li>`).join('')}</ul>
-        <a class="btn btn-block" href="#/learning">Start my first lesson →</a>
-        <p class="hint">A receipt would be sent to ${esc(state.user.email)}.</p>
-      </div>`;
-    $('#modalCard .btn').focus();
-    celebrate('big');
-  }
-
-  function submitFeedback(f) {
-    const picked = f.querySelector('input[name=rate]:checked');
-    if (!picked) { toast('Pick a rating first — it takes one tap.'); return; }
-    const rating = +picked.value;
-    const happy = rating >= 4;
-    api('/feedback', { method: 'POST', body: { rating, message: $('#fb', f).value.trim() } })
-      .catch(err => toast('Your feedback couldn’t be saved: ' + esc(err.message), { timeout: 5000 }));
-    $('#modalCard').innerHTML = `<button class="modal-x" type="button" data-action="close-modal" aria-label="Close">✕</button>
-      <div class="success">
-        <h2 class="h2">${happy ? 'You just made our day!' : 'Thank you for being honest.'}</h2>
-        <p class="lead">${happy ? 'We’ll keep raising the bar so UpClick stays your number 1.' : 'We read every response, and this one goes straight to the team to make UpClick better.'}</p>
-        <button class="btn btn-block" type="button" data-action="close-modal">Back to UpClick</button></div>`;
-    $('#modalCard .btn').focus();
-    if (happy) celebrate('medium');
+      <a class="btn btn-block" href="${hasCourses ? '#/profile' : '#/courses'}">${hasCourses ? 'Go to my Profile' : 'Pick my first course'}</a></div>`, 'Welcome');
+    if (mode === 'signup') celebrate('medium');
   }
 
   function saveLesson(id, i, done, snapshot) {
@@ -1181,7 +1533,11 @@
       });
   }
 
-  function toggleLesson(id, i) {
+  function isFirstLesson() {
+    return Object.values(state.enrolled).reduce((n, e) => n + e.done.length, 0) === 1;
+  }
+
+  function toggleLesson(id, i, { quiet = false } = {}) {
     const c = byId(id), e = state.enrolled[id];
     if (!c || !e) return;
     const snapshot = { ...e, done: [...e.done] };
@@ -1206,22 +1562,237 @@
       requestAnimationFrame(() => requestAnimationFrame(() => { neu.querySelector('.progress i').style.width = after + '%'; }));
       countTo(neu.querySelector('[data-pct]'), before, after);
       const btn = neu.querySelector(`[data-i="${i}"]`);
-      if (btn) {
+      if (btn && !quiet) {
         btn.focus({ preventScroll: true });
-        if (completing) { btn.closest('.lesson').classList.add('fresh'); celebrate('small', btn); }
+        if (completing) { btn.closest('.lesson').classList.add('fresh'); celebrate(isFirstLesson() ? 'medium' : 'small', btn); }
       }
     }
     if (completing && before < 50 && after >= 50 && !justFinished) toast('Halfway there — keep that streak going!');
     if (justFinished) {
+      const firstCert = Object.values(state.enrolled).filter(x => x.completedAt).length === 1;
       setTimeout(() => {
         openModal(`<div class="success"><div class="seal" aria-hidden="true">★</div>
-          <p class="eyebrow">Course complete</p>
+          <p class="eyebrow">${firstCert ? 'Your first certificate' : 'Course complete'}</p>
           <h2 class="h2">You did it${state.user ? ', ' + first(state.user.name) : ''}!</h2>
-          <p class="lead">You finished <strong>${esc(c.title)}</strong> — all ${total} lessons. Your certificate is ready.</p>
-          <a class="btn btn-block" href="#/certificate/${id}">Claim my certificate</a></div>`, 'Course complete');
-        celebrate('big');
+          <p class="lead">You finished <strong>${esc(c.title)}</strong> — all ${total} lessons. Your certificate is saved in Profile → Certificates.</p>
+          <a class="btn btn-block" href="#/certificate/${id}">View my certificate</a>
+          <a class="btn btn-ghost btn-block" href="#/learn/${id}" data-jump="rate">Rate this course</a></div>`, 'Course complete');
+        celebrate(firstCert ? 'big' : 'medium');
       }, 550);
     }
+    return justFinished;
+  }
+
+  const PLAY_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12.5-7.5z" fill="currentColor"/></svg>';
+  const PAUSE_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="4.5" width="4" height="15" rx="1" fill="currentColor"/><rect x="14" y="4.5" width="4" height="15" rx="1" fill="currentColor"/></svg>';
+  const LOCK_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" fill="currentColor"/><path d="M8 11V8a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="2.2"/></svg>';
+  const lessonSecs = (c, i) => 45 + ((i * 37 + c.id.length * 11) % 75);
+  const fmtTime = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  let watched = {};
+  function loadWatched() {
+    watched = state.user ? store.get(`watch:${state.user.id}`, {}) : {};
+  }
+  const watchKey = (id, i) => `${id}:${i}`;
+  let P = null;
+
+  function lessonCode(c, i) {
+    const t = c.modules[i].replace(/"/g, "'");
+    const n = i + 1;
+    if (c.category === 'Tools') return { file: 'terminal', lines: [`git checkout -b lesson-${n}`, 'git add .', `git commit -m "${t}"`, `git push origin lesson-${n}`], out: `Branch lesson-${n} pushed` };
+    if (c.category === 'Mobile') return { file: 'main.dart', lines: [`final lesson = "${t}";`, '', 'void main() {', '  print("Practising $lesson");', '}'], out: `Practising ${t}` };
+    if (c.category === 'Web') return { file: `lesson-${n}.js`, lines: [`const lesson = "${t}";`, '', 'function practise(topic) {', '  return "Practising " + topic;', '}', '', 'console.log(practise(lesson));'], out: `Practising ${t}` };
+    return { file: `lesson_${n}.py`, lines: [`lesson = "${t}"`, '', 'def practise(topic):', '    return "Practising " + topic', '', 'print(practise(lesson))'], out: `Practising ${t}` };
+  }
+
+  function lessonCaptions(c, i) {
+    const t = c.modules[i];
+    return [
+      `Welcome to lesson ${i + 1}: ${t}.`,
+      `I'm ${c.instructor}, and we'll build this step by step.`,
+      'Let’s open the editor and write some code together.',
+      'Watch how each line builds on the one before it.',
+      'Run it — this is exactly what you should see.',
+      'Try it yourself before moving on to the next lesson.'
+    ];
+  }
+
+  function openPlayer(id, i) {
+    const c = byId(id);
+    if (!c || !c.modules[i]) return;
+    const e = state.enrolled[id];
+    const preview = !e;
+    if (preview && i !== 0) return;
+    const dur = lessonSecs(c, i);
+    const saved = watched[watchKey(id, i)] || 0;
+    const startAt = !preview && saved > 2 && saved < dur - 2 ? saved : 0;
+    const done = !preview && e.done.includes(i);
+    openModal(`<div class="player">
+      <p class="eyebrow">${preview ? 'Free preview' : `Lesson ${i + 1} of ${c.modules.length}`} · ${esc(c.title)}</p>
+      <h2 class="h3 player-title">${esc(c.modules[i])}</h2>
+      <div class="vp" id="vp" tabindex="0" role="region" aria-label="Lesson video: ${esc(c.modules[i])}. Space to play or pause, arrow keys to skip.">
+        <div class="vp-screen" id="vpScreen"></div>
+        <div class="vp-caption" id="vpCap" aria-live="off"></div>
+        <button class="vp-big" type="button" data-action="vp-toggle" aria-label="Play video">${PLAY_SVG}</button>
+        <span class="vp-resume" id="vpResume" ${startAt ? '' : 'hidden'}>Resume from ${fmtTime(startAt)}</span>
+        <div class="vp-end" id="vpEnd" hidden></div>
+        <div class="vp-controls">
+          <button class="vp-btn" type="button" data-action="vp-toggle" id="vpPlayBtn" aria-label="Play">${PLAY_SVG}</button>
+          <button class="vp-btn" type="button" data-action="vp-back" aria-label="Back 10 seconds">−10</button>
+          <div class="vp-bar" id="vpBar" data-action="vp-seek" role="slider" tabindex="0" aria-label="Video position" aria-valuemin="0" aria-valuemax="${dur}" aria-valuenow="0"><i id="vpFill"></i></div>
+          <span class="vp-time" id="vpTime">0:00 / ${fmtTime(dur)}</span>
+          <button class="vp-btn vp-txt" type="button" data-action="vp-speed" aria-label="Playback speed">1×</button>
+          <button class="vp-btn vp-txt" type="button" data-action="vp-cc" aria-pressed="true" aria-label="Captions">CC</button>
+        </div>
+      </div>
+      <div class="player-foot">
+        ${preview
+          ? `<p class="hint">Enrol to unlock all ${c.modules.length} video lessons and your certificate.</p>${enrolButton(c, 'btn-sm', 'Enrol now')}`
+          : `<div class="pf-nav">
+               <button class="btn btn-ghost btn-sm" type="button" data-action="vp-go" data-i="${i - 1}" ${i === 0 ? 'disabled' : ''} aria-label="Previous lesson${i > 0 ? ': ' + esc(c.modules[i - 1]) : ''}">‹ Previous</button>
+               <span class="hint">Lesson ${i + 1} of ${c.modules.length}</span>
+               <button class="btn btn-ghost btn-sm" type="button" data-action="vp-go" data-i="${i + 1}" ${i === c.modules.length - 1 ? 'disabled' : ''} aria-label="Next lesson${i < c.modules.length - 1 ? ': ' + esc(c.modules[i + 1]) : ''}">Next ›</button>
+             </div>
+             <button class="btn btn-outline btn-sm" type="button" data-action="vp-mark" id="vpMark">${done ? '✓ Completed' : 'Mark as complete'}</button>`}
+      </div>
+    </div>`, 'Lesson video', { wide: true });
+    P = { id, i, c, preview, dur, t: startAt, playing: false, speed: 1, cc: true, raf: 0, last: 0, ended: false, timer: 0, scene: '' };
+    if (!preview && state.user) store.set(`last:${state.user.id}`, { id, i });
+    paintPlayer();
+    $('.vp-big').focus();
+  }
+
+  function sceneHTML(f) {
+    const { c, i } = P;
+    if (f < 0.16) {
+      return { key: 'title', html: `<div class="vs vs-title"><span class="logo">UPClick</span>
+        <span class="vs-num">Lesson ${String(i + 1).padStart(2, '0')}</span>
+        <p class="vs-h">${esc(c.modules[i])}</p><span class="vs-by">with ${esc(c.instructor)}</span></div>` };
+    }
+    if (f < 0.84) {
+      const code = lessonCode(c, i);
+      const text = code.lines.join('\n');
+      const typed = Math.min(1, (f - 0.18) / 0.5);
+      const n = Math.max(0, Math.floor(text.length * typed));
+      const showOut = f > 0.7;
+      return { key: 'code', pre: `${highlight(text.slice(0, n))}${n < text.length ? '<span class="caret"></span>' : ''}`,
+        out: showOut ? `&gt; ${esc(code.out)}` : '', html: `<div class="vs vs-code">
+        <div class="vs-file"><i></i><i></i><i></i><span>${esc(code.file)}</span></div>
+        <pre class="vs-pre"></pre><div class="vs-out" hidden></div>
+        <span class="vs-cam" aria-hidden="true">${esc(initials(c.instructor))}</span></div>` };
+    }
+    const next = c.modules[i + 1];
+    return { key: 'sum', html: `<div class="vs vs-sum"><span class="vs-num">Key takeaway</span>
+      <p class="vs-h">You can now apply “${esc(c.modules[i])}” in your own code.</p>
+      <span class="vs-by">${next ? `Up next: ${esc(next)}` : 'That was the final lesson of this course'}</span></div>` };
+  }
+
+  function paintPlayer() {
+    if (!P) return;
+    const vp = $('#vp');
+    if (!vp) return;
+    const f = P.t / P.dur;
+    const s = sceneHTML(f);
+    if (s.key !== P.scene) { $('#vpScreen').innerHTML = s.html; P.scene = s.key; P.pre = null; }
+    if (s.key === 'code') {
+      if (s.pre !== P.pre) { $('#vpScreen .vs-pre').innerHTML = s.pre; P.pre = s.pre; }
+      const out = $('#vpScreen .vs-out');
+      if (out.hidden === !!s.out) { out.innerHTML = s.out; out.hidden = !s.out; }
+    }
+    const caps = lessonCaptions(P.c, P.i);
+    $('#vpCap').textContent = P.cc ? caps[Math.min(caps.length - 1, Math.floor(f * caps.length))] : '';
+    $('#vpFill').style.width = (f * 100) + '%';
+    $('#vpBar').setAttribute('aria-valuenow', String(Math.floor(P.t)));
+    $('#vpBar').setAttribute('aria-valuetext', `${fmtTime(P.t)} of ${fmtTime(P.dur)}`);
+    $('#vpTime').textContent = `${fmtTime(P.t)} / ${fmtTime(P.dur)}`;
+    vp.classList.toggle('playing', P.playing);
+    vp.classList.toggle('no-cc', !P.cc);
+    const pb = $('#vpPlayBtn');
+    pb.innerHTML = P.playing ? PAUSE_SVG : PLAY_SVG;
+    pb.setAttribute('aria-label', P.playing ? 'Pause' : 'Play');
+    $('#vpResume').hidden = P.playing || P.t < 1 || P.ended;
+  }
+
+  function playerTick(now) {
+    if (!P || !P.playing) return;
+    P.t = Math.min(P.dur, P.t + (now - P.last) / 1000 * P.speed);
+    P.last = now;
+    paintPlayer();
+    if (P.t >= P.dur) { endPlayer(); return; }
+    P.raf = requestAnimationFrame(playerTick);
+  }
+
+  function setPlaying(on) {
+    if (!P) return;
+    if (on && P.ended) { P.t = 0; P.ended = false; $('#vpEnd').hidden = true; clearInterval(P.timer); }
+    P.playing = on;
+    if (on) { P.last = performance.now(); P.raf = requestAnimationFrame(playerTick); }
+    else { cancelAnimationFrame(P.raf); rememberPosition(); }
+    paintPlayer();
+  }
+
+  function seekPlayer(t) {
+    if (!P) return;
+    if (P.ended) { P.ended = false; $('#vpEnd').hidden = true; clearInterval(P.timer); }
+    P.t = Math.max(0, Math.min(P.dur - 0.05, t));
+    paintPlayer();
+  }
+
+  function rememberPosition() {
+    if (!P || P.preview) return;
+    if (!state.user) return;
+    const k = watchKey(P.id, P.i);
+    if (P.ended || P.t < 2) delete watched[k]; else watched[k] = Math.floor(P.t);
+    store.set(`watch:${state.user.id}`, watched);
+  }
+
+  function stopPlayer() {
+    if (!P) return;
+    cancelAnimationFrame(P.raf);
+    clearInterval(P.timer);
+    rememberPosition();
+    P = null;
+  }
+
+  function endPlayer() {
+    P.playing = false;
+    P.ended = true;
+    rememberPosition();
+    paintPlayer();
+    const { id, i, c } = P;
+    const end = $('#vpEnd');
+    if (P.preview) {
+      end.innerHTML = `<h3>Enjoyed the preview?</h3>
+        <p>Enrol to unlock all ${c.modules.length} lessons of ${esc(c.title)}.</p>
+        <div class="actions">${enrolButton(c, 'btn-sm', 'Enrol now')}<button class="btn btn-outline btn-sm vp-on-dark" type="button" data-action="vp-replay">Replay</button></div>`;
+      end.hidden = false;
+      return;
+    }
+    const e = state.enrolled[id];
+    let finished = false;
+    if (!e.done.includes(i)) finished = toggleLesson(id, i, { quiet: true });
+    if (finished) { stopPlayer(); return; }
+    const mark = $('#vpMark');
+    if (mark) mark.textContent = '✓ Completed';
+    const next = c.modules.findIndex((_, k) => k > i && !state.enrolled[id].done.includes(k));
+    const nextAny = next > -1 ? next : c.modules.findIndex((_, k) => !state.enrolled[id].done.includes(k));
+    end.innerHTML = `${CHECK_SVG}<h3>Lesson complete</h3>
+      ${nextAny > -1
+        ? `<p>Up next: <strong>${esc(c.modules[nextAny])}</strong>${nextAny === i + 1 ? ' — starting in <span id="vpCount">5</span>s' : ''}</p>
+           <div class="actions"><button class="btn btn-sm" type="button" data-action="vp-next" data-i="${nextAny}">Play next lesson</button>
+           <button class="btn btn-outline btn-sm vp-on-dark" type="button" data-action="vp-replay">Replay</button></div>`
+        : `<p>Every lesson in this course is done.</p><div class="actions"><a class="btn btn-sm" href="#/certificate/${id}">View certificate</a></div>`}`;
+    end.hidden = false;
+    celebrate(isFirstLesson() ? 'medium' : 'small', $('#vp'));
+    if (nextAny === i + 1) {
+      let left = 5;
+      P.timer = setInterval(() => {
+        left -= 1;
+        const el = $('#vpCount');
+        if (el) el.textContent = String(left);
+        if (left <= 0) { clearInterval(P.timer); openPlayer(id, nextAny); setPlaying(true); }
+      }, 1000);
+    }
+    end.querySelector('.btn')?.focus();
   }
 
   function heartBurst(e, btn) {
@@ -1249,45 +1820,40 @@
     if (loves % 10 === 0) { celebrate('medium'); toast(`${loves} hearts! You really love us.`); }
   }
 
-  function openFeedback() {
-    openModal(`<p class="eyebrow">Feedback</p><h2 class="h3">How are we doing?</h2>
-      <form id="feedbackForm">
-        <fieldset style="border:0;padding:0;margin:0"><legend class="sr-only">Rate UpClick from 1 to 5</legend>
-        <div class="faces">
-          ${['Poor', 'Fair', 'Okay', 'Good', 'Great'].map((f, i) => `<label class="face"><input type="radio" name="rate" value="${i + 1}"><span class="face-box"><strong>${i + 1}</strong><small>${f}</small></span></label>`).join('')}
-        </div></fieldset>
-        <label class="lbl" for="fb">Anything we could do better? <span class="hint">(optional)</span></label>
-        <textarea id="fb" class="input" rows="3"></textarea>
-        <button class="btn btn-block" type="submit" style="margin-top:16px">Send feedback</button>
-      </form>`, 'Feedback');
-  }
-
   function logout() {
     const s = state.session;
     const certs = Object.values(state.enrolled).filter(e => e.completedAt).length;
-    openModal(`<div class="success"><h2 class="h2">See you soon, ${first(state.user?.name)}!</h2>
+    openModal(`<div class="success"><h2 class="h2">Log out, ${first(state.user?.name)}?</h2>
       <p>Here’s what you achieved this session:</p>
       <ul class="session-stats">
-        <li><strong>${s.lessons}</strong><span>lessons done</span></li>
-        <li><strong>${s.enrolled}</strong><span>courses joined</span></li>
+        <li><strong>${s.lessons}</strong><span>${s.lessons === 1 ? 'lesson done' : 'lessons done'}</span></li>
+        <li><strong>${s.enrolled}</strong><span>${s.enrolled === 1 ? 'course joined' : 'courses joined'}</span></li>
         <li><strong>${certs}</strong><span>certificates</span></li>
       </ul>
-      <p class="lead">${s.lessons ? 'Great work — every lesson counts. Your progress is saved.' : 'Next time, try one lesson — it only takes a few minutes.'}</p>
+      <p class="logout-note">Logging out <strong>clears your data from this device</strong>. Your courses, progress and certificates stay saved in your account.</p>
       <button class="btn btn-block" type="button" data-action="confirm-logout">Log out</button>
-      <button class="btn btn-ghost btn-block" type="button" data-action="close-modal">Keep learning</button></div>`, 'Log out');
+      <button class="btn btn-ghost btn-block" type="button" data-action="close-modal">Stay logged in</button></div>`, 'Log out');
   }
 
   document.addEventListener('click', e => {
+    const link = e.target.closest('a[data-jump], a[data-print]');
+    if (link) {
+      if (link.dataset.jump) session.set('jump', link.dataset.jump);
+      if (link.dataset.print) session.set('print', true);
+      if (link.getAttribute('href') === location.hash) { e.preventDefault(); render(); }
+    }
     const t = e.target.closest('[data-action]');
     if (!t) return;
     const id = t.dataset.id;
     switch (t.dataset.action) {
-      case 'add': addToCart(id, t); break;
-      case 'remove': removeFromCart(id, t); break;
-      case 'checkout': openCheckout(); break;
-      case 'buy-now':
-        if (!state.cart.includes(id)) { state.cart.push(id); save(); bumpBadge(); }
-        openCheckout(); break;
+      case 'enrol': startEnrol(id); break;
+      case 'confirm-enrol': submitEnrol(t, id); break;
+      case 'jump': $('#' + t.dataset.target)?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' }); break;
+      case 'pf-filter':
+        state.profile.filter = t.dataset.k;
+        $$('[data-action="pf-filter"]').forEach(b => b.setAttribute('aria-pressed', String(b === t)));
+        $('#pcGrid').innerHTML = sortedMyCourses().map(courseCard).join('') || '<li class="hint">No courses match this filter.</li>';
+        break;
       case 'cat':
         state.catalog.category = t.dataset.cat;
         $$('.chip').forEach(c => c.setAttribute('aria-pressed', String(c === t)));
@@ -1305,17 +1871,34 @@
       case 'next-lesson': {
         const c = byId(id), done = state.enrolled[id]?.done || [];
         const next = c.modules.findIndex((_, i) => !done.includes(i));
-        if (next > -1) toggleLesson(id, next);
+        if (next > -1) openPlayer(id, next);
+        break;
+      }
+      case 'play-lesson': openPlayer(id, +t.dataset.i); break;
+      case 'vp-toggle': setPlaying(!(P && P.playing)); break;
+      case 'vp-back': if (P) seekPlayer(P.t - 10); break;
+      case 'vp-seek': if (P) { const r = t.getBoundingClientRect(); seekPlayer((e.clientX - r.left) / r.width * P.dur); } break;
+      case 'vp-speed': if (P) { P.speed = P.speed === 1 ? 1.5 : P.speed === 1.5 ? 2 : 1; t.textContent = `${P.speed}×`; } break;
+      case 'vp-cc': if (P) { P.cc = !P.cc; t.setAttribute('aria-pressed', String(P.cc)); paintPlayer(); } break;
+      case 'vp-replay': if (P) { P.t = 0; P.ended = false; $('#vpEnd').hidden = true; clearInterval(P.timer); setPlaying(true); } break;
+      case 'vp-next': if (P) { const pid = P.id; openPlayer(pid, +t.dataset.i); setPlaying(true); } break;
+      case 'vp-go': if (P) { const pid = P.id; openPlayer(pid, +t.dataset.i); } break;
+      case 'vp-mark': if (P && state.enrolled[P.id]) {
+        const { id: pid, i: pi } = P;
+        const wasDone = state.enrolled[pid].done.includes(pi);
+        const finished = toggleLesson(pid, pi, { quiet: true });
+        if (finished) { closeModal(false); break; }
+        t.textContent = wasDone ? 'Mark as complete' : '✓ Completed';
+        if (!wasDone) celebrate('small', t);
         break;
       }
       case 'close-modal': closeModal(); break;
       case 'logout': logout(); break;
       case 'confirm-logout':
         endSession(false); closeModal(false);
-        toast('You’re logged out. Your progress is saved to your account.');
+        toast('You’re logged out and nothing is left on this device. Your progress is safe in your account.', { timeout: 4500 });
         if (location.hash === '#/' || location.hash === '') render(); else location.hash = '#/';
         break;
-      case 'confirm-checkout': submitCheckout(t); break;
       case 'course-new': openCourseForm(); break;
       case 'course-edit': openCourseForm(byId(id)); break;
       case 'course-delete': confirmDeleteCourse(id); break;
@@ -1323,7 +1906,6 @@
       case 'retry': init(); break;
       case 'run-code': runCode(t); break;
       case 'heart': heartBurst(e, t); break;
-      case 'feedback': openFeedback(); break;
       case 'print': window.print(); break;
       case 'share': {
         const c = byId(id);
@@ -1354,7 +1936,16 @@
 
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') { closeModal(); closeNav(); }
-    if (e.key === '/' && !/input|textarea|select/i.test(document.activeElement.tagName) && $('#q')) { e.preventDefault(); $('#q').focus(); }
+    if (P && !/input|textarea|select/i.test(document.activeElement.tagName)) {
+      const k = e.key;
+      if (k === ' ' || k === 'k') {
+        const tag = document.activeElement.tagName;
+        if (k === ' ' && tag === 'BUTTON' && !document.activeElement.closest('.vp')) return;
+        e.preventDefault(); setPlaying(!P.playing); return;
+      }
+      if (k === 'ArrowLeft' || k === 'ArrowRight') { e.preventDefault(); seekPlayer(P.t + (k === 'ArrowRight' ? 5 : -5)); return; }
+    }
+    if (e.key === '/' && !/input|textarea|select/i.test(document.activeElement.tagName) && !P) { e.preventDefault(); ($('#q') || $('#navQ')).focus(); }
     if (e.key === 'Tab' && !$('#modal').hidden) {
       const f = $$('#modalCard a, #modalCard button, #modalCard input, #modalCard textarea').filter(el => !el.disabled && el.offsetParent !== null);
       if (!f.length) return;
@@ -1384,16 +1975,17 @@
       updateNav();
       return;
     }
+    store.del('cart');
+    store.del('watch');
     if (state.token) {
       try {
         state.user = await api('/auth/me');
+        loadWatched();
         await loadEnrolments();
       } catch {
         endSession(false);
       }
     }
-    state.cart = state.cart.filter(id => byId(id) && !state.enrolled[id]);
-    save();
     loaded = true;
     render();
   }

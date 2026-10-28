@@ -11,14 +11,14 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, select
 
-from database import Course, Enrolment, Feedback, User, engine, get_session, utcnow
+from database import ContactMessage, Course, Enrolment, Review, User, engine, get_session, utcnow
 from security import admin_user, create_token, current_user, hash_password, optional_user, verify_password
 from seed_data import COURSES
 
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]{2,}$")
 LEVELS = {"Beginner": 1, "Intermediate": 2, "Advanced": 3}
-BUNDLE_MIN = 2
-BUNDLE_RATE = 0.10
+RETURNING_RATE = 0.10
+CONTACT_TOPICS = ("Courses and enrolment", "My account", "Certificates", "Technical problem", "Something else")
 STATIC_DIR = Path(__file__).with_name("static")
 
 
@@ -117,17 +117,64 @@ class CourseIn(BaseModel):
         return cleaned
 
 
-class CheckoutIn(BaseModel):
-    course_ids: list[str] = Field(min_length=1, max_length=50)
+class EnrolIn(BaseModel):
+    course_id: str = Field(min_length=1, max_length=80)
+
+
+class ProfileIn(BaseModel):
+    name: str = Field(max_length=80)
+
+    @field_validator("name")
+    @classmethod
+    def check_name(cls, value: str) -> str:
+        value = " ".join(value.split())
+        if len(value) < 2:
+            raise ValueError("Please enter your name.")
+        return value
 
 
 class LessonIn(BaseModel):
     done: bool
 
 
-class FeedbackIn(BaseModel):
+class ReviewIn(BaseModel):
     rating: int = Field(ge=1, le=5)
-    message: str = Field(default="", max_length=1000)
+    comment: str = Field(default="", max_length=1000)
+
+
+class ContactIn(BaseModel):
+    name: str = Field(max_length=80)
+    email: str = Field(max_length=254)
+    topic: str = Field(max_length=60)
+    message: str = Field(max_length=2000)
+
+    @field_validator("name")
+    @classmethod
+    def check_name(cls, value: str) -> str:
+        value = " ".join(value.split())
+        if len(value) < 2:
+            raise ValueError("Please enter your name.")
+        return value
+
+    @field_validator("email")
+    @classmethod
+    def check_email(cls, value: str) -> str:
+        return clean_email(value)
+
+    @field_validator("topic")
+    @classmethod
+    def check_topic(cls, value: str) -> str:
+        if value not in CONTACT_TOPICS:
+            raise ValueError("Choose a topic from the list.")
+        return value
+
+    @field_validator("message")
+    @classmethod
+    def check_message(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 10:
+            raise ValueError("Tell us a little more (at least 10 characters).")
+        return value
 
 
 def iso(value: Optional[datetime]) -> Optional[str]:
@@ -157,6 +204,23 @@ def enrolment_out(enrolment: Enrolment) -> dict:
         "done": list(enrolment.done),
         "enrolled_at": iso(enrolment.enrolled_at),
         "completed_at": iso(enrolment.completed_at),
+    }
+
+
+def public_name(name: str) -> str:
+    parts = name.split()
+    return parts[0] if len(parts) == 1 else f"{parts[0]} {parts[-1][0]}."
+
+
+def review_out(review: Review, name: str, mine: bool = False) -> dict:
+    return {
+        "course_id": review.course_id,
+        "name": public_name(name),
+        "rating": review.rating,
+        "comment": review.comment,
+        "created_at": iso(review.created_at),
+        "updated_at": iso(review.updated_at),
+        "mine": mine,
     }
 
 
@@ -202,6 +266,15 @@ def login(data: LoginIn, session: Session = Depends(get_session)) -> dict:
 
 @app.get("/api/auth/me", tags=["auth"])
 def me(user: User = Depends(current_user)) -> dict:
+    return user_out(user)
+
+
+@app.patch("/api/auth/me", tags=["auth"])
+def update_me(data: ProfileIn, user: User = Depends(current_user), session: Session = Depends(get_session)) -> dict:
+    user.name = data.name
+    session.add(user)
+    session.commit()
+    session.refresh(user)
     return user_out(user)
 
 
@@ -274,47 +347,35 @@ def delete_course(course_id: str, _: User = Depends(admin_user), session: Sessio
     course = get_course_or_404(session, course_id)
     if session.exec(select(Enrolment).where(Enrolment.course_id == course_id)).first():
         raise HTTPException(status_code=409, detail="Learners are enrolled in this course, so it can't be deleted.")
+    for review in session.exec(select(Review).where(Review.course_id == course_id)).all():
+        session.delete(review)
     session.delete(course)
     session.commit()
     return Response(status_code=204)
 
 
-@app.post("/api/checkout", status_code=201, tags=["learning"])
-def checkout(data: CheckoutIn, user: User = Depends(current_user), session: Session = Depends(get_session)) -> dict:
-    courses = []
-    for course_id in dict.fromkeys(data.course_ids):
-        course = session.get(Course, course_id)
-        if course is None:
-            raise HTTPException(status_code=404, detail="One of the courses in your cart is no longer available.")
-        courses.append(course)
-    owned = set(session.exec(select(Enrolment.course_id).where(Enrolment.user_id == user.id)).all())
-    new = [c for c in courses if c.id not in owned]
-    if not new:
-        raise HTTPException(status_code=409, detail="You're already enrolled in these courses.")
-    bundle = len(new) >= BUNDLE_MIN
-    subtotal = sum(c.price for c in new)
-    discount = int(subtotal * BUNDLE_RATE + 0.5) if bundle else 0
-    enrolments = []
-    for course in new:
-        enrolment = Enrolment(
-            user_id=user.id,
-            course_id=course.id,
-            done=[],
-            price_paid=int(course.price * (1 - BUNDLE_RATE) + 0.5) if bundle else course.price,
-        )
-        course.students += 1
-        session.add(course)
-        session.add(enrolment)
-        enrolments.append(enrolment)
+@app.post("/api/enrol", status_code=201, tags=["learning"])
+def enrol(data: EnrolIn, user: User = Depends(current_user), session: Session = Depends(get_session)) -> dict:
+    course = get_course_or_404(session, data.course_id)
+    owned = session.exec(select(Enrolment).where(Enrolment.user_id == user.id)).all()
+    if any(e.course_id == course.id for e in owned):
+        raise HTTPException(status_code=409, detail="You're already enrolled in this course.")
+    returning = len(owned) > 0
+    discount = int(course.price * RETURNING_RATE + 0.5) if returning else 0
+    enrolment = Enrolment(user_id=user.id, course_id=course.id, done=[], price_paid=course.price - discount)
+    course.students += 1
+    session.add(course)
+    session.add(enrolment)
     session.commit()
-    for enrolment in enrolments:
-        session.refresh(enrolment)
+    session.refresh(enrolment)
     return {
-        "enrolled": [c.id for c in new],
-        "subtotal": subtotal,
+        "course_id": course.id,
+        "price": course.price,
         "discount": discount,
-        "total": subtotal - discount,
-        "enrolments": [enrolment_out(e) for e in enrolments],
+        "total": course.price - discount,
+        "returning": returning,
+        "first_enrolment": not returning,
+        "enrolment": enrolment_out(enrolment),
     }
 
 
@@ -361,13 +422,60 @@ def set_lesson(
     return {**enrolment_out(enrolment), "just_completed": just_completed}
 
 
-@app.post("/api/feedback", status_code=201, tags=["feedback"])
-def send_feedback(
-    data: FeedbackIn,
-    user: Optional[User] = Depends(optional_user),
-    session: Session = Depends(get_session),
+@app.get("/api/courses/{course_id}/reviews", tags=["reviews"])
+def course_reviews(
+    course_id: str, user: Optional[User] = Depends(optional_user), session: Session = Depends(get_session)
 ) -> dict:
-    session.add(Feedback(user_id=user.id if user else None, rating=data.rating, message=data.message.strip()))
+    get_course_or_404(session, course_id)
+    rows = session.exec(
+        select(Review, User).where(Review.course_id == course_id, Review.user_id == User.id).order_by(Review.updated_at.desc())
+    ).all()
+    reviews = [review_out(r, u.name, bool(user and user.id == r.user_id)) for r, u in rows]
+    ratings = [r["rating"] for r in reviews]
+    return {
+        "count": len(reviews),
+        "average": round(sum(ratings) / len(ratings), 1) if ratings else None,
+        "reviews": reviews,
+    }
+
+
+@app.put("/api/courses/{course_id}/reviews", tags=["reviews"])
+def save_review(
+    course_id: str, data: ReviewIn, user: User = Depends(current_user), session: Session = Depends(get_session)
+) -> dict:
+    get_course_or_404(session, course_id)
+    enrolled = session.exec(
+        select(Enrolment).where(Enrolment.user_id == user.id, Enrolment.course_id == course_id)
+    ).first()
+    if enrolled is None:
+        raise HTTPException(status_code=403, detail="Enrol in this course to rate it.")
+    review = session.exec(select(Review).where(Review.user_id == user.id, Review.course_id == course_id)).first()
+    first = review is None
+    if first:
+        review = Review(user_id=user.id, course_id=course_id, rating=data.rating, comment=data.comment.strip())
+    else:
+        review.rating = data.rating
+        review.comment = data.comment.strip()
+        review.updated_at = utcnow()
+    session.add(review)
+    session.commit()
+    session.refresh(review)
+    return {**review_out(review, user.name, True), "first": first}
+
+
+@app.get("/api/me/reviews", tags=["reviews"])
+def my_reviews(user: User = Depends(current_user), session: Session = Depends(get_session)) -> list[dict]:
+    rows = session.exec(select(Review).where(Review.user_id == user.id).order_by(Review.updated_at.desc())).all()
+    return [review_out(r, user.name, True) for r in rows]
+
+
+@app.post("/api/contact", status_code=201, tags=["help"])
+def contact(
+    data: ContactIn, user: Optional[User] = Depends(optional_user), session: Session = Depends(get_session)
+) -> dict:
+    session.add(ContactMessage(
+        user_id=user.id if user else None, name=data.name, email=data.email, topic=data.topic, message=data.message
+    ))
     session.commit()
     return {"ok": True}
 
@@ -376,26 +484,28 @@ def send_feedback(
 def admin_summary(_: User = Depends(admin_user), session: Session = Depends(get_session)) -> dict:
     all_users = session.exec(select(User)).all()
     users = [u for u in all_users if not u.is_admin]
-    enrolments = session.exec(select(Enrolment)).all()
-    feedback = session.exec(select(Feedback).order_by(Feedback.created_at.desc())).all()
     names = {u.id: u.name for u in all_users}
-    ratings = [f.rating for f in feedback]
+    titles = {c.id: c.title for c in session.exec(select(Course)).all()}
+    enrolments = session.exec(select(Enrolment)).all()
+    reviews = session.exec(select(Review).order_by(Review.updated_at.desc())).all()
+    messages = session.exec(select(ContactMessage).order_by(ContactMessage.created_at.desc())).all()
+    ratings = [r.rating for r in reviews]
     return {
         "learners": len(users),
-        "courses": len(session.exec(select(Course)).all()),
+        "courses": len(titles),
         "enrolments": len(enrolments),
         "completions": sum(1 for e in enrolments if e.completed_at is not None),
         "revenue": sum(e.price_paid for e in enrolments),
-        "feedback_count": len(feedback),
+        "review_count": len(reviews),
         "average_rating": round(sum(ratings) / len(ratings), 2) if ratings else None,
-        "recent_feedback": [
-            {
-                "name": names.get(f.user_id, "Guest") if f.user_id else "Guest",
-                "rating": f.rating,
-                "message": f.message,
-                "created_at": iso(f.created_at),
-            }
-            for f in feedback[:20]
+        "recent_reviews": [
+            {**review_out(r, names.get(r.user_id, "Learner")), "course": titles.get(r.course_id, r.course_id)}
+            for r in reviews[:20]
+        ],
+        "message_count": len(messages),
+        "recent_messages": [
+            {"name": m.name, "email": m.email, "topic": m.topic, "message": m.message, "created_at": iso(m.created_at)}
+            for m in messages[:20]
         ],
     }
 
